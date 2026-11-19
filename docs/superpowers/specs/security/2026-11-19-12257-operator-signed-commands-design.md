@@ -103,7 +103,7 @@ test fails on any missing key. **Unknown types are Tier A.**
 
 - **Tier A — operator approval required under `enforce`:**
   - Code and shell: `script`, `run_script`, `task_run`, `computer_action`, `http_request`,
-    `terminal_start`, `start_desktop`, `desktop_stream_start`, `tunnel_open`.
+    `network_http_check`, `terminal_start`, `start_desktop`, `desktop_stream_start`, `tunnel_open`.
   - Software and patches: `software_install|update|uninstall`, `install_patches`,
     `rollback_patches`, `oem_update_run`, `homebrew_bootstrap`.
   - Agent self-change: `dev_update`, `agent_rollback_v1`, `set_auto_update`, `self_uninstall`.
@@ -116,11 +116,13 @@ test fails on any missing key. **Unknown types are Tier A.**
   - Restore, containment, security: `bare_metal_rebuild`, `bmr_recover`, `vm_restore_from_backup`,
     `vm_instant_boot`, `backup_restore`, `mssql_restore`, `hyperv_restore`, `hyperv_checkpoint`,
     `backup_cleanup`, `execute_containment`, `release_containment`, `security_threat_restore`,
-    `encryption_rotate_key`, `system_cleanup_run`.
+    `encryption_rotate_key`, `system_cleanup_run`, `backup_run`, `mssql_backup`, `hyperv_backup`
+    (the payload picks the destination and credentials, so they can copy files off the device),
+    `security_threat_remove`, `security_threat_quarantine`, `quarantine_file`.
   - Time: `time_apply_policy`, `time_set_timezone` (the clock protects expiry — §3).
 - **Tier B — unsigned in v1 (outage only):** reboot/shutdown/lock family, start/stop/restart
-  service, kill process, task enable/disable, backup create, threat remove/quarantine, cancel
-  commands.
+  service, kill process, task enable/disable, security scan (it quarantines only into the agent's own folder),
+  cancel commands.
 - **Tier C — unsigned:** reads and telemetry.
 
 The plan finalizes the list by walking the registry; when unsure, Tier A.

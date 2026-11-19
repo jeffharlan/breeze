@@ -35,7 +35,7 @@ func TestUnknownTypeIsTierA(t *testing.T) {
 func TestDesignTierAListIsTierA(t *testing.T) {
 	designTierA := []string{
 		"script", "run_script", "task_run", "computer_action", "http_request",
-		"terminal_start", "start_desktop", "desktop_stream_start", "tunnel_open",
+		"network_http_check", "terminal_start", "start_desktop", "desktop_stream_start", "tunnel_open",
 		"software_install", "software_update", "software_uninstall", "install_patches",
 		"rollback_patches", "oem_update_run", "homebrew_bootstrap",
 		"dev_update", "agent_rollback_v1", "set_auto_update", "self_uninstall",
@@ -49,6 +49,8 @@ func TestDesignTierAListIsTierA(t *testing.T) {
 		"backup_restore", "mssql_restore", "hyperv_restore", "hyperv_checkpoint",
 		"backup_cleanup", "execute_containment", "release_containment",
 		"security_threat_restore", "encryption_rotate_key", "system_cleanup_run",
+		"backup_run", "mssql_backup", "hyperv_backup", "security_threat_remove",
+		"security_threat_quarantine", "quarantine_file",
 		"time_apply_policy", "time_set_timezone",
 	}
 	checked := 0
@@ -61,7 +63,7 @@ func TestDesignTierAListIsTierA(t *testing.T) {
 			t.Errorf("TierOf(%q) = %v, spec section 1 lists it as Tier A", k, got)
 		}
 	}
-	if checked < 50 {
+	if checked < 60 {
 		t.Errorf("only %d spec Tier A names found in the registry; the list or registry has drifted", checked)
 	}
 }
