@@ -150,8 +150,8 @@ func TestCanonicalizeDepthBoundary(t *testing.T) {
 	}
 }
 
-// The API (JS) writes 1 and the agent decodes it as float64(1); both decoding
-// paths and the JS form must meet at the same bytes.
+// Compares Go's two decoders only (plain float64 and UseNumber); it does not
+// involve JavaScript. The JS side is covered by the RFC number table above.
 func TestCanonicalizeSameBytesFromBothDecoders(t *testing.T) {
 	const doc = `{"n":1,"big":9007199254740992,"f":1.50,"e":1E+2,"s":"é","l":[1,2.0]}`
 	var plain any

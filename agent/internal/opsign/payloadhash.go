@@ -13,12 +13,13 @@ const PayloadKey = "operatorApproval"
 // payloadExclusions lists, per command type, top-level payload fields the server
 // sets at delivery time that cannot change what runs. Source:
 // apps/api/src/services/scriptDispatch.ts. executionId and batchId are
-// per-delivery IDs; secretEnv/secretEnvEnvelope are server-held values the
-// operator never sees. Accepted limit: a script that executes a secret's value
-// as code can be steered through that value. Every other field, including ones
-// added later, is covered by default.
+// per-delivery IDs; restorePoint is re-resolved at delivery (fresh requestId and
+// validUntil, restorePointRequest.ts); secretEnv/secretEnvEnvelope are
+// server-held values the operator never sees. Accepted limit: a script that
+// executes a secret's value as code can be steered through that value. Every
+// other field, including ones added later, is covered by default.
 var payloadExclusions = map[string][]string{
-	"script": {"executionId", "batchId", "secretEnv", "secretEnvEnvelope"},
+	"script": {"executionId", "batchId", "restorePoint", "secretEnv", "secretEnvEnvelope"},
 }
 
 // PayloadHash returns the lowercase hex SHA-256 of the canonical JSON of the
@@ -26,9 +27,6 @@ var payloadExclusions = map[string][]string{
 // The caller's map is not modified.
 func PayloadHash(commandType string, payload map[string]any) (string, error) {
 	covered := maps.Clone(payload)
-	if covered == nil {
-		covered = map[string]any{}
-	}
 	delete(covered, PayloadKey)
 	for _, key := range payloadExclusions[commandType] {
 		delete(covered, key)

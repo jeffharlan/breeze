@@ -14,6 +14,7 @@ func scriptPayload() map[string]any {
 		"scriptId":                     "11111111-1111-4111-8111-111111111111",
 		"executionId":                  "exec-1",
 		"batchId":                      "batch-1",
+		"restorePoint":                 map[string]any{"requestId": "rp-1", "validUntil": "2026-11-19T00:00:00Z"},
 		"language":                     "bash",
 		"content":                      "echo hi",
 		"parameters":                   map[string]any{"a": "1"},
@@ -60,7 +61,7 @@ func TestPayloadHash(t *testing.T) {
 
 	t.Run("script delivery-time fields are excluded", func(t *testing.T) {
 		base := mustHash(t, "script", scriptPayload())
-		for _, key := range []string{"executionId", "batchId", "secretEnv", "secretEnvEnvelope"} {
+		for _, key := range []string{"executionId", "batchId", "restorePoint", "secretEnv", "secretEnvEnvelope"} {
 			if got := mustHash(t, "script", withKey(scriptPayload(), key, "changed")); got != base {
 				t.Errorf("changing %s changed the hash", key)
 			}
