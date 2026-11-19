@@ -2,7 +2,6 @@ package opsign
 
 import (
 	"bytes"
-	"cmp"
 	"errors"
 	"fmt"
 	"regexp"
@@ -103,10 +102,12 @@ func check(re *regexp.Regexp, field, v string) error {
 }
 
 // checkLine validates free text that occupies part of one line: labels and
-// patch items. Control characters (including LF) would let a value forge extra lines.
+// patch items. Control characters (including LF) would let a value forge extra
+// lines. Only an ASCII space at either edge is refused: Unicode whitespace
+// tables differ between Go and JS, so a wider rule could not be mirrored exactly.
 func checkLine(field, s string) error {
 	isControl := func(r rune) bool { return r < 0x20 || r == 0x7f }
-	if s == "" || s != strings.TrimSpace(s) || !utf8.ValidString(s) || strings.IndexFunc(s, isControl) >= 0 {
+	if s == "" || s[0] == ' ' || s[len(s)-1] == ' ' || !utf8.ValidString(s) || strings.IndexFunc(s, isControl) >= 0 {
 		return fmt.Errorf("opsign: invalid %s %q", field, s)
 	}
 	return nil
@@ -133,11 +134,8 @@ func sortedUnique[T any](items []T, compare func(a, b T) int, what string) ([]T,
 	return sorted, nil
 }
 
-func compareEntries(a, b Entry) int {
-	return cmp.Or(strings.Compare(a.DeviceID, b.DeviceID), strings.Compare(a.Hostname, b.Hostname))
-}
-
-// sortedEntries validates a device list and returns it in canonical order.
+// sortedEntries validates a device list and returns it in canonical order. A
+// device appears once, whatever its hostname or hash.
 func sortedEntries(list []Entry, what string, withHash bool) ([]Entry, error) {
 	if len(list) == 0 || len(list) > maxEntries {
 		return nil, fmt.Errorf("opsign: %s holds %d entries, want 1 to %d", what, len(list), maxEntries)
@@ -154,7 +152,7 @@ func sortedEntries(list []Entry, what string, withHash bool) ([]Entry, error) {
 	if err := errors.Join(errs...); err != nil {
 		return nil, err
 	}
-	return sortedUnique(list, compareEntries, what)
+	return sortedUnique(list, func(a, b Entry) int { return strings.Compare(a.DeviceID, b.DeviceID) }, what)
 }
 
 func (k BundleKey) validate() error {

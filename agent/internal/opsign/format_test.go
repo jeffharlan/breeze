@@ -411,6 +411,8 @@ func TestParseRejects(t *testing.T) {
 		{"wrong domain line", sub("breeze-operator-approval-v1", "breeze-operator-approval-v2")},
 		{"bundle domain on an approval", sub("breeze-operator-approval-v1", "breeze-operator-trust-bundle-v1")},
 		{"duplicate entry", lineEdit(func(l []string) []string { l[7] = l[6]; return l })},
+		{"same device twice with another hostname", setLine(7, func(string) string { return deviceA + " srv-01x " + hashB })},
+		{"same device twice with another hash", setLine(7, func(string) string { return deviceA + " srv-01 " + hashB })},
 		{"unsorted entries", swapLines(6, 7)},
 		{"entry count too high", sub("entries=3", "entries=4")},
 		{"entry count too low", sub("entries=3", "entries=2")},
@@ -457,6 +459,7 @@ func TestParseRejects(t *testing.T) {
 		{"empty device list", ruleDev, lineEdit(func(l []string) []string { return slices.Concat(l[:6], []string{"scopeDevices=0"}, l[9:]) })},
 		{"unsorted scope devices", ruleDev, swapLines(7, 8)},
 		{"duplicate scope device", ruleDev, lineEdit(func(l []string) []string { l[8] = l[7]; return l })},
+		{"same scope device twice with another hostname", ruleDev, setLine(8, func(string) string { return deviceA + " srv-01x" })},
 		{"scope device carrying a hash", ruleDev, setLine(7, func(s string) string { return s + " " + hashA })},
 		{"empty patch item", ruleDev, setLine(12, func(string) string { return "" })},
 		{"patch item with a control character", ruleDev, sub("KB5034441", "KB5034\x07441")},
@@ -541,10 +544,17 @@ func TestCanonicalBytesRejectsInvalidStructs(t *testing.T) {
 			t.Error("accepted")
 		}
 	})
-	t.Run("action with duplicate device", func(t *testing.T) {
+	t.Run("action with a device twice", func(t *testing.T) {
 		a := sampleAction()
-		a.Entries = append(a.Entries, a.Entries[0])
+		a.Entries = append(a.Entries, Entry{DeviceID: a.Entries[0].DeviceID, Hostname: "other-host", PayloadHash: hashB})
 		if _, err := a.CanonicalBytes(); err == nil {
+			t.Error("accepted")
+		}
+	})
+	t.Run("rule with a scope device twice", func(t *testing.T) {
+		r := sampleDeviceRule()
+		r.ScopeDevices = append(r.ScopeDevices, Entry{DeviceID: r.ScopeDevices[0].DeviceID, Hostname: "other-host"})
+		if _, err := r.CanonicalBytes(); err == nil {
 			t.Error("accepted")
 		}
 	})
@@ -570,5 +580,32 @@ func TestNonUTCTimesSerializeAsUTC(t *testing.T) {
 	a.ExpiresAt = a.ExpiresAt.In(time.FixedZone("EST", -5*3600))
 	if got, want := canonicalText(t, a), canonicalText(t, sampleAction()); got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// Only an ASCII space at the edge is refused; Unicode whitespace is accepted
+// because the TypeScript twin cannot reproduce Go's whitespace table.
+func TestLineEdgeRuleIsASCIISpaceOnly(t *testing.T) {
+	for _, edge := range []string{"\u00a0", "\u0085", "\ufeff", "\u200b"} {
+		b := sampleBundle()
+		b.Keys[2].Label = edge + "Dispatch" + edge
+		r := sampleDeviceRule()
+		r.MatchItems = []string{edge + "KB1" + edge}
+		for name, v := range map[string]canonicalizer{"label": b, "patch item": r} {
+			canonical, err := v.CanonicalBytes()
+			if err != nil {
+				t.Errorf("%s edged with %+q rejected: %v", name, edge, err)
+				continue
+			}
+			var parseErr error
+			if name == "label" {
+				_, parseErr = ParseBundle(canonical)
+			} else {
+				_, parseErr = ParseEnvelope(canonical)
+			}
+			if parseErr != nil {
+				t.Errorf("%s edged with %+q does not parse back: %v", name, edge, parseErr)
+			}
+		}
 	}
 }
