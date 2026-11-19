@@ -1,319 +1,322 @@
 ---
 issue: 12257
-status: draft — awaiting second opinion and maintainer agreement
+status: draft v2 — revised after independent review; awaiting requester approval and maintainer agreement
 ---
 
 # Operator-signed commands (#12257)
 
 ## Intent
 
-Today an agent runs any risky command the API delivers. Whoever controls the API host
-(database, process, and its environment — including `APP_ENCRYPTION_KEY`, which unlocks the
-deployment signing key in `manifest_signing_keys`) can run code on every enrolled device at once.
+Today an agent runs any risky command the API delivers. Whoever controls the API host (database,
+process, environment — including `APP_ENCRYPTION_KEY`, which unlocks the deployment signing key in
+`manifest_signing_keys`) can run code on every enrolled device at once. The same deployment key also
+signs update manifests, rollback directives, rebind directives and key delegations, and is pinned by
+**every** agent through the heartbeat (`apps/api/src/routes/agents/heartbeat.ts:2763`), regardless
+of `BINARY_SOURCE`.
 
 **Goal:** a full compromise of the Breeze server must not, by itself, be able to make agents run
-code, install software, write files, open remote control, or destroy data. A risky action needs a
-signature from an operator's own key, checked **on the agent** against keys the server cannot add
-or change.
+code, replace or downgrade the agent, install software, write or destroy files, change device trust
+or identity, or open remote control. Those actions need a signature from an operator's own hardware
+key, checked **on the agent** against keys the server cannot add, swap or remove.
 
 **Why now:** an MSP pilot wants to expand from a test group to its whole fleet; this is the open
 blocker.
 
 ## Goals
 
-1. Agents refuse Tier A commands (below) that lack a valid operator approval, once enforcement is on.
-2. One operator approval can cover a bulk action (many devices).
-3. Scheduled and automatic work (patching, remediation, scheduled scripts) keeps running under
-   **standing approvals**: rules an operator signs once.
-4. Existing fleets can migrate without downtime: `off → audit → enforce`.
-5. A lost key cannot brick a fleet: there is a documented recovery path.
+1. Under `enforce`, agents refuse Tier A actions — commands, update/rollback/upgrade paths, and
+   trust-changing heartbeat fields — without a valid operator approval.
+2. One operator approval can cover a bulk action (chunked by device).
+3. Scheduled work (patching, scheduled scripts, software deployment, remediation) keeps running under
+   **standing rules** an operator signs once.
+4. Migration without downtime: `off → audit → enforce`.
+5. Losing a key cannot brick a fleet: documented local recovery.
 
 ## Non-goals
 
-- Protecting against a compromised **endpoint** (local admin on the device can already do anything).
-- Protecting confidentiality of reads (`file_read`, screenshots, event logs) in phase 1. Listed as a
-  phase 2 option.
-- Replacing server-side RBAC, MFA, or the approval inbox. Those stay; this adds a check the server
-  cannot fake.
-- Changing the vendor-signed update path (already outside the server's reach).
+- A compromised **endpoint** (local admin can already do anything).
+- Confidentiality of reads (`file_read`, screenshots, logs) — phase 2 option.
+- Replacing server-side RBAC, MFA or the approval inbox. They stay.
+- Signing from the web browser in v1 (see §5).
 
-## Anti-goals (would make this a failure even if it "works")
+## Anti-goals
 
-- Any path where the server can add, swap, or remove an operator key, or lower the enforcement
-  mode, without an operator signature.
-- Approvals that cover "whatever the server sends next" (a rule must bind exact content hashes).
-- Silently dropping automation: if a standing rule stops matching, the operator must see why.
-- A design LanternOps cannot maintain: one gate, one canonical format, one tier table.
+- Any path where the server can add, swap or remove an operator key, lower the mode, change the
+  device's pinned identity, or move the device's clock backwards in a way that revives approvals.
+- A path where an operator's phone signs bytes it did not first decode and show.
+- Approvals that cover "whatever the server sends next": every approval binds exact payload hashes.
+- Silent automation loss: a rule that stops matching is visible in the UI.
 
 ## Threat model
 
-| Attacker | In scope? | Result after this change |
-|---|---|---|
-| Full API host compromise (DB + process + env + Redis) | Yes — the target | Cannot run Tier A on any device without an operator's tap. Can still: deny service, read data the server already holds, send Tier B commands (reboot, restart service), replay nothing (single-use approvals), and **swap the content an operator is shown in the web UI** (see "What you see is what you sign"). |
-| DB-only compromise | Yes | Same as above, strictly weaker. |
-| Stolen operator login (password/session) | Yes | Cannot approve without the operator's key device. |
-| Stolen operator key device + unlock | Partly | Can approve; limited by the operator's scope; revocable by another operator. |
-| Compromised endpoint | No | Out of scope. |
-| Server compromised **before** a device first pins trust | Partly | Trust-on-first-use window. Mitigated by fingerprint check (below). |
+| Attacker | Result under `enforce` |
+|---|---|
+| Full API host compromise (DB + process + env + Redis) | Cannot run any Tier A action without an operator tap on an operator phone that shows the real content. **Can still:** deny service; read server-held data; send Tier B commands (outage only); withhold rule revocations (bounded to already-approved content, ≤ 90 days); **inject input into a remote session an operator opened** (terminal/desktop traffic is relayed by the server — §6; end-to-end session keys are phase 2). |
+| DB-only compromise | Strictly weaker than above. |
+| Stolen operator web login | Cannot approve: approvals need the operator's phone key. |
+| Stolen + unlocked operator phone | Can approve actions within that key's role; cannot change the bundle alone once threshold ≥ 2; revocable by other admins. |
+| Compromised endpoint | Out of scope. |
+| Server compromised **before** a device first pins trust | TOFU window. Detected by a 128-bit fingerprint the operator checks locally (§2). |
 
 ## Background (today's code)
 
-- One agent choke point: `dispatchCommand` (`agent/internal/heartbeat/handlers.go:119`), reached by
-  both the poll path and the WebSocket path. It already has a payload guard for diagnostic
-  authorizations (`handlers.go:127`).
-- Queue bypasses: terminal, desktop and tunnel frames go through `sendCommandToAgent` directly from
-  `routes/terminalWs.ts`, `desktopWs.ts`, `tunnelWs.ts`, `tunnelHttpCore.ts`.
-- ~164 registered command types; ~80 are risky.
-- Prior art reused here:
-  - Frozen TOFU + monotonic-epoch key rotation: `agent/internal/config/manifestkeys.go`,
-    `manifestdelegation.go`.
-  - Line-based canonical bytes with a domain string, short expiry and replay cache:
-    `diagaccess_grant.go` / `services/diagnosticAccess/authorization.ts`.
-  - Approver device keys: `services/approverWebAuthn.ts` (platform WebAuthn, UV required),
-    `apps/mobile/src/services/attestingSigner.ts` (Secure Enclave / StrongBox P-256, attested),
-    `services/mobileHwKey.ts`, `services/authenticatorAssurance.ts` (L1–L4).
-- Gap in all of the above: verification happens on the **server**; the agent never sees the
-  operator's signature.
+- Command choke point: `dispatchCommand` (`agent/internal/heartbeat/handlers.go:119`), only caller
+  `heartbeat.go:8207`, used by both poll and WebSocket paths. Existing payload guard at `:127`.
+- **Not** through that choke point: heartbeat response fields (`heartbeat.go:6169-6391` — upgrade
+  offers for agent/helper/watchdog, manifest keys, delegations, rebind directive, time-sync settings,
+  network containment state `containment.go:460-480`), and the watchdog's own command channel
+  (`agent/cmd/breeze-watchdog/main.go:1576`, `1644-1675`).
+- Server direct-push: 15 non-test API files call `sendCommandToAgent` (terminal, desktop, tunnel,
+  `tunnelHttpCore.ts` via `sendCommandToAgentAwaitResult`, `routes/remote/sessions.ts`,
+  `routes/tunnels.ts`, `routes/monitors.ts`, `agentCommandRelay.ts`, …) — not only the queue.
+- Updater trusts the embedded vendor key **and** pinned deployment keys (`updater.go:719-775`,
+  `859-878`). Rollback has no version floor (`rollback/executor.go`). The downgrade guard lives only
+  in `heartbeat/version_downgrade.go:19`.
+- The mobile approver signs a server-supplied nonce string verbatim
+  (`apps/mobile/src/services/approverDevice.ts:509-516`) — fine for login step-up, unsafe as an
+  envelope signer.
+- Prior art reused: frozen TOFU + monotonic epoch (`manifestkeys.go`, `manifestdelegation.go`);
+  line-based domain-separated canonical bytes and interop golden vectors (`diagaccess_grant.go`,
+  `services/diagnosticAccess/`); attested Secure Enclave / StrongBox P-256 keys
+  (`apps/mobile/src/services/attestingSigner.ts`).
 
 ## Approaches considered
 
 | Approach | Trade-off | Decision |
 |---|---|---|
-| A. Operator-signed commands with per-action taps **and** operator-signed standing rules | Most build; keeps automation; the only option that removes the "silent mass compromise" | **Chosen** (by the requester, 2026-11-19) |
-| B. Per-action taps only | Simpler; stops all scheduled automation | Rejected: automation is core RMM value |
-| C. Move deployment key to a separate signer/HSM | Cheap; server can still ask the signer to sign anything | Rejected as the fix; may still be worth doing separately |
-| D. Harden the host only | Lowers likelihood, not blast radius | Rejected as the fix |
+| A. Operator-signed per-action approvals **and** operator-signed standing rules | Most build; keeps automation; removes silent mass compromise | **Chosen** by the requester, 2026-11-19 |
+| B. Per-action approvals only | Simpler; stops all scheduled automation | Rejected |
+| C. Move the deployment key to a separate signer/HSM | Server can still ask it to sign anything | Rejected as the fix |
+| D. Host hardening only | Lowers likelihood, not blast radius | Rejected as the fix |
+
+**Signing channel** (decided in this design, after review): v1 signs **only** in the native mobile
+app. Web/WebAuthn signing was cut — a compromised server serves the web page, can swap what any
+passkey prompt signs (including a bundle change that adds its own key), platform passkeys are
+cloud-synced, and the server can swap the public key at web registration.
 
 ## Design
 
 ### 1. Tiers
 
-A static table in the agent, `agent/internal/opsign/tiers.go`, maps every registered command type
-to a tier. A unit test fails if any `handlerRegistry` key is missing from the table, so a new
-command cannot ship untiered. **Unknown types default to Tier A.**
+A static table `agent/internal/opsign/tiers.go` maps every `handlerRegistry` key to a tier; a unit
+test fails on any missing key. **Unknown types are Tier A.**
 
-- **Tier A — needs operator approval when enforcing.** Code and shell (`script`, `run_script`,
-  `task_run`, `computer_action`, `http_request`, terminal/desktop/tunnel *session start*), software
-  and patches (`software_install|update|uninstall`, `install_patches`, `rollback_patches`,
-  `oem_update_run`, `homebrew_bootstrap`), agent self-change (`dev_update`, `set_auto_update`,
-  `self_uninstall`), privilege and policy (`actuate_elevation`, `pam_apply_v2`, `pam_cleanup_v2`,
-  `apply_cis_remediation`, `apply_audit_policy_baseline`, `manage_startup_item`,
-  `peripheral_policy_sync*`), file and registry writes (`file_write`, `registry_set`), restore and
-  containment (`bare_metal_rebuild`, `bmr_recover`, `vm_restore_from_backup`, `vm_instant_boot`,
-  `backup_restore`, `mssql_restore`, `hyperv_restore`, `execute_containment`,
-  `release_containment`), **and destructive data operations** (`file_delete`,
-  `secure_delete_file`, `encrypt_file`, `file_trash_purge`, `registry_delete`,
-  `registry_key_delete`, `encryption_rotate_key`).
-- **Tier B — unsigned in phase 1.** Availability-only actions: reboot/shutdown/lock family,
-  service and process control, task enable/disable, backups (create, not restore), time settings,
-  quarantine/restore of threats, cleanup. Rationale: worst case is an outage, not code execution or
-  data loss. Revisit in phase 2.
-- **Tier C — unsigned.** Reads and telemetry. Phase 2 option for confidentiality.
+- **Tier A — operator approval required under `enforce`:**
+  - Code and shell: `script`, `run_script`, `task_run`, `computer_action`, `http_request`,
+    `terminal_start`, `start_desktop`, `desktop_stream_start`, `tunnel_open`.
+  - Software and patches: `software_install|update|uninstall`, `install_patches`,
+    `rollback_patches`, `oem_update_run`, `homebrew_bootstrap`.
+  - Agent self-change: `dev_update`, `agent_rollback_v1`, `set_auto_update`, `self_uninstall`.
+  - Privilege and policy: `actuate_elevation`, `pam_apply_v2`, `pam_cleanup_v2`, `pam_reconcile_v2`,
+    `apply_cis_remediation`, `apply_audit_policy_baseline`, `manage_startup_item`,
+    `peripheral_policy_sync*`, `vault_configure`.
+  - File and registry change: `file_write`, `file_copy`, `file_rename`, `file_mkdir`, `file_delete`,
+    `secure_delete_file`, `encrypt_file`, `file_trash_purge`, `file_trash_restore`, `registry_set`,
+    `registry_delete`, `registry_key_create`, `registry_key_delete`.
+  - Restore, containment, security: `bare_metal_rebuild`, `bmr_recover`, `vm_restore_from_backup`,
+    `vm_instant_boot`, `backup_restore`, `mssql_restore`, `hyperv_restore`, `hyperv_checkpoint`,
+    `backup_cleanup`, `execute_containment`, `release_containment`, `security_threat_restore`,
+    `encryption_rotate_key`, `system_cleanup_run`.
+  - Time: `time_apply_policy`, `time_set_timezone` (the clock protects expiry — §3).
+- **Tier B — unsigned in v1 (outage only):** reboot/shutdown/lock family, start/stop/restart
+  service, kill process, task enable/disable, backup create, threat remove/quarantine, cancel
+  commands.
+- **Tier C — unsigned:** reads and telemetry.
 
-The exact table is finalized in the plan by walking `handlerRegistry`; the lists above are the
-intent.
+The plan finalizes the list by walking the registry; when unsure, Tier A.
 
-### 2. Operator trust root on the agent
+### 2. Trust root on the agent
 
-**Operator key.** A P-256 (ES256) key held in hardware by one operator: either a mobile-app
-Secure Enclave/StrongBox key (strong channel, §5) or a WebAuthn credential (web channel). Each key
-has an opaque `keyId`, a public key (SPKI), a channel (`mobile` | `webauthn`), and for WebAuthn the
-`rpId` and allowed origins.
+**Operator signing key.** A **separate** attested P-256 key in the mobile app (Secure Enclave /
+StrongBox), created only for this purpose and used only through the render-then-sign flow (§5). It
+is never used for login step-up and never signs a raw server string.
 
-**Trust bundle.** A partner-wide document listing the operator keys and the enforcement mode:
+**Trust bundle** (partner-wide):
 
 ```
 breeze-operator-trust-bundle-v1
 partnerId
-epoch            (strictly increasing)
-mode             (audit | enforce)
-keys             (sorted list: keyId, alg, spkiB64, channel, rpId, origins, label)
-threshold        (signatures needed to change the bundle; default 1, recommended 2)
-notBefore / notAfter
+epoch              strictly increasing
+mode               audit | enforce
+threshold          signatures required to change this bundle
+minAgentVersion    nothing installs below this, whoever signed it
+keys               sorted: keyId, spkiB64, role (admin | approver), label
 ```
 
-**Pinning rules** (copied from `manifestkeys.go` / `manifestdelegation.go`, but rooted in operator
-keys, not the deployment key):
+**Device pin** (per agent, written at pin time, never from the bundle): `deviceId`, `orgId`,
+`partnerId`, local hostname. Under `enforce`, a rebind directive or identity sync that changes these
+needs an operator approval (Tier A, kind `identity`).
 
-- **First pin (bootstrap):** the agent accepts a bundle with no signature requirement **only** when
-  it has none pinned. The bundle reaches the agent either (a) as `operator-trust.json` placed beside
-  the installer / passed as an MSI/PKG property, or (b) from the enrollment response. Either way the
-  agent logs and reports the bundle **fingerprint** (first 16 hex of SHA-256 of the canonical bytes).
-  The operator compares that with the fingerprint shown on their own key device (mobile app renders
-  it locally) — this is how a TOFU substitution gets caught.
-- **Every change after that** (add/remove key, change mode, change threshold) requires `threshold`
-  signatures from keys in the **currently pinned** bundle, over the new bundle's canonical bytes, and
-  a strictly higher `epoch`. The server can relay a bundle; it cannot make one.
-- **Mode can only go up without a signature** (`off → audit` on first pin). Going down
-  (`enforce → audit`) is a bundle change and needs signatures.
-- Pinned state lives in the agent config next to `pinned_manifest_pub_keys`, written under the same
-  lock and file permissions.
+**Rules:**
 
-**Existing agents (migration).** Already-enrolled agents receive the first bundle through the
-heartbeat once. This is a TOFU moment: the fingerprint is reported back and shown in the UI and on
-the operator's mobile app; the operator spot-checks one or more devices locally with
-`breeze-agent trust show`. Accepted risk: a server already compromised at migration time could pin
-its own bundle; the fingerprint check is the detection.
-
-**Recovery.** Lost all keys → a local administrator on the device runs `breeze-agent trust reset`
-(needs local admin, which is outside the threat model) and re-pins. The UI warns when a bundle has
-fewer than two keys.
+- **First pin** — only when nothing is pinned. Sources: `operator-trust.json` beside the installer
+  or passed as an installer property (preferred), or the enrollment / heartbeat response (existing
+  agents). The agent logs and reports a **128-bit fingerprint** (32 hex chars of SHA-256 of the
+  canonical bundle). The operator's phone renders the same fingerprint from its own copy; an operator
+  checks at least one device locally with `breeze-agent trust show`. A server-rendered list of
+  mismatches is a convenience only, not assurance.
+- **Every later change** (keys, roles, mode, threshold, `minAgentVersion`) needs `threshold`
+  signatures from **admin** keys in the currently pinned bundle and a higher epoch. The server can
+  relay a bundle; it cannot make one. The bundle has no expiry date (no clock dependency).
+- **Threshold** defaults to 2 as soon as two admin keys exist; the UI blocks enforce with fewer
+  than two admin keys.
+- **Adding a key** is phone-to-phone: the new operator's phone shows a QR with its public key; an
+  admin phone scans it and signs the bundle change. The server never supplies the key bytes the
+  admin signs.
+- **Fail closed:** a pin that exists but is unreadable or corrupt → refuse Tier A and report.
+- **Recovery:** local administrator runs `breeze-agent trust reset --expect <fingerprint>`; the
+  agent re-pins only a bundle matching that fingerprint.
 
 ### 3. Approval envelopes
 
-One canonical format, line-based like `diagaccess_grant.go`: UTF-8, LF-joined, no trailing newline,
-control characters rejected, sorted lists. The envelope is what the operator signs.
+One canonical format, line-based like `diagaccess_grant.go` (UTF-8, LF, no trailing newline, control
+characters rejected, sorted lists). Payload hashing: **the whole command payload**, canonical JSON
+(RFC 8785), minus a reviewed per-type exclusion list of fields that are set at delivery and cannot
+change what runs (e.g. a presigned download URL — the required SHA-256 is bound instead). New
+payload fields are therefore covered by default.
 
-**Action approval** (one tap, one action, one or more devices):
+**Action approval** (one tap; per-device entries because some values, like sourced script
+parameters, are resolved per device):
 
 ```
 breeze-operator-approval-v1
 kind=action
-approvalId        (random 128-bit, single use per device)
+approvalId       random 128-bit
 partnerId
 commandType
-contentHash       (per-type, §4)
-deviceIds         (sorted; at most 500 — larger fans out as a rule)
+entries          sorted: deviceId, hostname, payloadHash   (≤ 500 per envelope; chunk larger sets)
 issuedAt
-expiresAt         (≤ 24h after issuedAt; covers offline devices within one day)
+expiresAt        ≤ 24h; ≤ 2 min for session starts
 keyId
 ```
 
-**Standing rule** (one tap, repeated automatic use):
+**Standing rule:**
 
 ```
 breeze-operator-approval-v1
 kind=rule
 ruleId
-ruleEpoch         (strictly increasing per ruleId; a new epoch replaces the old)
+ruleEpoch        strictly increasing per ruleId; new epoch replaces old
 partnerId
-scope             (org:<id> | site:<id> | devices:<sorted ids>)
+scope            org:<id> | devices:<sorted deviceId+hostname>
 commandType
-contentHashes     (sorted allow-list of exact §4 hashes)
-notBefore / notAfter (≤ 365 days)
+match            payloadHashes (sorted allow-list)  |  patchItems (sorted allow-list, install_patches only)
+once             true | false
+notAfter         ≤ 90 days
 keyId
 ```
 
-A rule never says "any script" — it lists exact content hashes. Editing the script changes the
-hash, the rule stops matching, the command is refused, and the UI shows "needs re-approval".
-Revoking a rule is a new epoch with an empty hash list. (A compromised server can **withhold** a
-revocation; the damage is bounded to content an operator already approved.)
+- Rules are allowed only for: scheduled scripts, software deployment, patching, and remediation
+  scripts. **Not** for destructive file/registry types, restores, containment, uninstall, identity
+  or session starts — those are action approvals only.
+- `install_patches`: the agent checks each requested patch item is in the rule's list (one request
+  differs per device; the allow-list does not).
+- Rules signed by a key later removed from the bundle become invalid; the key-removal flow on the
+  phone offers to re-sign them.
+- Revocation = new epoch with an empty list.
 
-Signature formats:
+**Signature:** ES256 over SHA-256 of the canonical bytes, made in the app (§5).
 
-- **Mobile channel:** ES256 over SHA-256 of the canonical bytes, directly.
-- **WebAuthn channel:** the WebAuthn challenge is `SHA-256(canonical bytes)`. The agent receives
-  `authenticatorData`, `clientDataJSON`, `signature` and checks: `type == "webauthn.get"`,
-  `challenge` matches, `origin` is in the key's pinned origins, `rpIdHash == SHA-256(rpId)`, UP and
-  UV flags set, signature valid over `authenticatorData || SHA-256(clientDataJSON)`. Sign counters
-  are ignored (synced passkeys report 0).
+**Time.** The agent persists a **high-water time** (largest trusted time it has seen, from its own
+clock and from verified `issuedAt` values). Expiry and replay pruning use the high-water mark, never
+the raw clock, so rolling the clock back cannot revive anything. Server-supplied NTP settings and the
+time commands are Tier A.
 
-### 4. Content hashes per command type
+**Replay.** Action `approvalId`s are stored on disk until high-water time passes their expiry.
+Hostname in each entry is checked against the agent's own local hostname, so an approval for one
+device does not run on a device the server renamed or rebound to that ID.
 
-Each Tier A type has a canonicalizer on **both** sides (Go and TypeScript) with shared golden test
-vectors (same pattern as the diagnostic-access interop test). It hashes everything that changes what
-runs. Examples:
+### 4. Agent update, rollback and upgrade paths
 
-- `script` / `run_script`: language, content, runAs, timeout, raw parameters (before rendering),
-  target session, and a hash of the encrypted secret envelope's **key names** (values rotate and are
-  secret; names bound so a rule cannot gain new secrets).
-- `software_install`: download URL, **required** SHA-256 (the agent refuses an empty checksum when
-  enforcing), silent args, file type/name, detection rules, pre/post script bodies; or package
-  manager + name + version.
-- `file_write`: path + SHA-256 of decoded bytes.
-- `install_patches`: patch source + sorted patch ids (OS-vendor patches) or the third-party
-  URL+checksum list.
-- Session starts (`terminal_start`, `start_desktop`, `tunnel_open`): session id, user/role, and
-  for tunnels the target host:port. Data frames are accepted only for a session whose start was
-  approved.
+Enforced inside `agent/internal/updater` so every caller (heartbeat upgrade offers, rollback,
+helper/watchdog upgrades, the watchdog's own channel) inherits it. Under `enforce`:
 
-Types without a stable content (e.g. `self_uninstall`) hash a fixed type tag plus their arguments.
+- A manifest signed only by a deployment key needs an action approval of kind `agent_update` over
+  the artifact SHA-256.
+- Nothing installs below the bundle's `minAgentVersion`, whoever signed it (closes downgrade to a
+  gate-less release, including via `agent_rollback_v1` and the watchdog).
+- The watchdog reads the same pinned state and applies the same check.
 
-### 5. What you see is what you sign
+This ships in the **first** enforce-capable agent.
 
-A compromised server also serves the web UI. It can show "restart the print spooler" while asking
-the browser to sign the hash of a malicious script. WebAuthn authenticators do not display the
-challenge, so the web channel **cannot** stop this.
+### 5. Render-then-sign (mobile app)
 
-Therefore:
+The server sends the app the envelope **and** the full payloads. The app:
 
-- **Strong channel (recommended default): the native mobile app.** It is distributed through the app
-  stores, not served by the Breeze server. It receives the envelope **and** the full content
-  (script text, URLs, paths), recomputes the content hash locally, renders the decoded action, and
-  only then signs with its hardware key. A server that swaps content gets a hash mismatch.
-- **Web channel (allowed, weaker):** still removes the *silent, all-devices-at-once* attack — the
-  attacker must wait for an operator to approve something and can only swap within that one tap.
-  The trust bundle records each key's channel; a partner can set the bundle to require
-  mobile-channel keys for Tier A.
+1. Parses the envelope; refuses unknown kinds or domains.
+2. Recomputes every payload hash from the payloads itself; any mismatch → refuse.
+3. Renders the decoded action: script text, URLs + checksums, file paths, device names, rule scope,
+   expiry, and for bundle changes the exact key fingerprints added/removed.
+4. Only after the operator confirms with biometrics, signs with the operator signing key.
 
-This is a known limit, stated plainly in the UI and docs.
+The app never signs bytes it did not parse and render.
 
 ### 6. Agent gate
 
-`agent/internal/opsign` (new package) exposes `Check(cmd Command, now) Decision`. It is called in
-`dispatchCommand` before the handler, and in the terminal/desktop/tunnel start handlers. Order:
+New package `agent/internal/opsign`, `Check(cmd, now) Decision`, called once in `dispatchCommand`
+before the handler, and by the updater/watchdog and the heartbeat-field appliers for trust-changing
+fields (rebind/identity, time sync, containment state). Steps:
 
 1. Tier lookup. Not Tier A → allow.
-2. No pinned bundle or mode `off` → allow.
-3. Find an `operatorApproval` payload field: either an action approval or a rule reference
-   (`ruleId`, plus the rule envelope and its signature attached by the server at delivery).
-4. Verify signature against a key in the pinned bundle; check partner, expiry, device (own deviceId
-   in list or in scope), command type, content hash recomputed from **this** payload.
-5. Action approvals: record `approvalId` in a durable replay store (on disk, pruned after expiry)
-   and refuse reuse.
-6. Rules: check the latest pinned `ruleEpoch` for that `ruleId` (persisted; older epochs refused).
-7. Mode `audit` → log and report the would-be refusal, then allow. Mode `enforce` → refuse with a
-   distinct error code (`E_OPSIGN_*`) the server shows as "needs operator approval".
+2. No pin → allow (mode `off`). Pin unreadable → refuse.
+3. Find the `operatorApproval` field (action envelope, or rule envelope attached at delivery).
+4. Verify signature against a pinned key of a role allowed for this kind; check partner, own
+   deviceId + hostname, command type, payload hash recomputed from **this** payload, expiry against
+   high-water time.
+5. Action: record `approvalId`; refuse reuse. Rule: refuse older `ruleEpoch`; honor `once`.
+6. `audit` → log + report, allow. `enforce` → refuse with `E_OPSIGN_*`.
 
-The approval field is stripped before the handler runs so handlers never see it.
+The approval field is stripped before the handler runs.
+
+**Sessions** (`terminal_start`, `start_desktop`, `desktop_stream_start`, `tunnel_open`): the
+whole start payload is hashed (shell, offer/ICE servers, target host:port), expiry ≤ 2 minutes, and
+the agent enforces a maximum session length and idle timeout. Data frames are accepted only for an
+approved, live session. Stated limit: the server relays session traffic and can inject into an open
+session; phase 2 adds an end-to-end session key bound in the envelope.
 
 ### 7. Server side
 
-- **Tables** (partner-wide first, per `docs/agents/tenancy-rls.md`; RLS + policies in the creating
-  migration; registered in cascade, merge and export lists):
-  - `operator_signing_keys` (partner_id): public key, channel, rpId/origins, owner user, status.
-  - `operator_trust_bundles` (partner_id): epoch, canonical bytes, signatures.
-  - `operator_approvals` (org_id): action envelopes + signatures, linked to `device_commands`.
-  - `operator_standing_rules` (partner_id XOR org_id): rule envelopes + signatures, linked to the
-    producer (automation, patch policy, deployment, etc.).
-- **Delivery:** `prepareClaimedCommandsForDelivery` attaches the matching approval or rule to each
-  Tier A command. The server never signs anything here.
-- **Producers with no human present** (automations, patch scheduler, policy remediation, software
-  deployment, CIS, PAM actuation, DR, offboarding, fleet findings, AI/Wisp): each looks up a
-  matching standing rule; if none matches it still queues the command, and the agent's audit/refusal
-  is surfaced in the UI as "needs approval" with a one-tap path to create the rule.
-- **AI/Wisp:** may propose; never holds a key. A Tier A proposal becomes a pending approval for a
-  human.
-- **UI:** key registration (mobile + web), trust bundle page (keys, threshold, mode, fingerprint,
-  devices that report a different fingerprint), approval prompts, rule list with "stopped matching"
-  status.
+- **Tables** (partner-wide first per `docs/agents/tenancy-rls.md`; RLS in the creating migration;
+  registered in cascade, merge and export lists): `operator_signing_keys` (partner_id),
+  `operator_trust_bundles` (partner_id), `operator_approvals` (org_id), `operator_standing_rules`
+  (partner_id XOR org_id).
+- **Attachment:** one function attaches the matching approval/rule to a Tier A command. It is called
+  from `prepareClaimedCommandsForDelivery` **and** from a wrapper around `sendCommandToAgent` /
+  `sendCommandToAgentAwaitResult`, so direct-push paths are covered. The server never signs.
+- **No-human producers** in v1 that get rules: automations/scheduled scripts, patch scheduler,
+  software deployment, remediation scripts. Everything else (DR, offboarding, containment, fleet
+  findings, AI/Wisp) creates a pending action approval for a human. AI/Wisp never holds a key.
+- **Web UI** (management only, no signing): bundle page (keys, roles, threshold, mode, fingerprint),
+  pending approvals (approve on phone), rules with "stopped matching" status, refusals from audit.
 
 ### 8. Rollout
 
-1. Ship agent with gate in `audit` only. Collect would-be refusals per producer.
-2. Ship server signing, rules, and UI. Operators create keys and the first bundle.
-3. Turn a pilot group to `enforce` via a signed bundle change. Watch refusals.
+1. Agents ship with the gate in `audit`.
+2. Operators install the app, create keys, pin the first bundle; check fingerprints locally.
+3. Signed bundle change sets a pilot group to `enforce`; watch refusals.
 4. Fleet-wide `enforce`.
 
-### 9. Self-hosted local update manifests
+## Cut from v1
 
-With `BINARY_SOURCE=local`, update manifests are signed by the deployment key (server-held). In
-`enforce` mode the agent refuses a deployment-key-only manifest unless a standing rule of type
-`agent_update` lists that binary's SHA-256. Vendor-signed manifests are unaffected.
+Web/WebAuthn signing; site scope; rule `notBefore`; bundle expiry; per-type canonicalizers
+(replaced by whole-payload hashing + exclusions); rules for DR/offboarding/containment/AI; the
+">500 devices becomes a rule" path (chunk instead).
 
-## Open for the builder (minor, builder's call)
+## Builder's calls
 
-- File layout inside `agent/internal/opsign` and the API service split.
-- Replay store format (journal file vs small bbolt), as long as it survives restarts and is pruned.
-- Exact UI wording and placement (must follow `docs/agents/settings.md`: the trust bundle has one
-  home, at partner level).
+- File layout inside `opsign` and the API service split.
+- Replay/high-water store format (must survive restarts and be pruned).
+- UI wording and placement (one home at partner level, per `docs/agents/settings.md`).
 
-## Delivery (several PRs, in order)
+## Delivery order
 
-1. Agent: tier table + test, `opsign` package, canonical format + golden vectors, gate in `audit`.
-2. Agent: trust bundle pinning + `breeze-agent trust show|reset`.
-3. API + migration: keys, bundles, approvals, rules tables; delivery attachment.
-4. Mobile app: sign envelopes with the attested key; render content; fingerprint view.
-5. Web: key registration, bundle page, approval prompt (WebAuthn), rule management.
-6. Producers: rule lookup for each automatic producer.
-7. Enforce mode + session-start gating for terminal/desktop/tunnel + local update manifests.
+1. **Format freeze + agent core:** canonical format with golden vectors (Go + TS), tier table,
+   pin, gate, high-water time, identity pin, updater floor and watchdog check — enforce-capable,
+   wired for `script` first.
+2. **Mobile app:** separate signing key, render-then-sign, QR key-add, fingerprint view
+   (critical path: app-store review).
+3. **API:** tables, attachment on queue **and** direct-push paths; prove `enforce` on a test group.
+4. Widen to all Tier A command types and heartbeat fields.
+5. Standing rules + the four producers.
+6. Session starts.
+7. Web management UI.
