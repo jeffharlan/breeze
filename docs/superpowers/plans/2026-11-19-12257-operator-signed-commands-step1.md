@@ -63,13 +63,13 @@ Not covered here, flagged for the reviewer: the watchdog reads the same state fi
 - Test: `agent/internal/opsign/jcs_test.go`, `agent/internal/opsign/payloadhash_test.go`
 
 **Interfaces:**
-- Produces: `func Canonicalize(v any) ([]byte, error)`; `const PayloadKey = "operatorApproval"`; `func PayloadHash(commandType string, payload map[string]any) (string, error)` (64 lowercase hex); `var payloadExclusions = map[string][]string{"script": {"executionId", "batchId", "secretEnv", "secretEnvEnvelope"}}`.
+- Produces: `func Canonicalize(v any) ([]byte, error)`; `const PayloadKey = "operatorApproval"`; `func PayloadHash(commandType string, payload map[string]any) (string, error)` (64 lowercase hex); `var payloadExclusions = map[string][]string{"script": {"executionId", "batchId", "secretEnv", "secretEnvEnvelope", "restorePoint"}}`.
 
 - [ ] **Step 1: Write the failing tests.** Table test `TestCanonicalizeVectors` with exact expected strings:
   - `map[string]any{"b":1.0,"a":"x"}` → `{"a":"x","b":1}`
   - numbers: `0`→`0`, `math.Copysign(0,-1)`→`0`, `1e21`→`1e+21`, `1e20`→`100000000000000000000`, `0.000001`→`0.000001`, `1e-7`→`1e-7`, `5e-324`→`5e-324`, `1.7976931348623157e308`→`1.7976931348623157e+308`, `9007199254740992`→`9007199254740992` (vector `num-2^53`), `333333333.33333329`→`333333333.3333333`, `float64(1)`→`1` (vector `num-int`)
   - strings: `" <&>é"` → `" <&>é"` raw (no HTML escaping), `"\n\t\"\\"` → `"\n\t\"\\"`, `"\x01"` → `"\u0001"`
-  - keys sorted by UTF-16 code units: `{"€":1,"\U0001F600":2}` → `😀` key first.
+  - keys sorted by UTF-16 code units: `{"€":1,"\U0001F600":2}` → `€` key first (0x20AC < 0xD83D in UTF-16).
   - errors: `math.NaN()`, `math.Inf(1)`, invalid UTF-8 string, nesting depth 33.
   - `json.Number("1.50")` → `1.5`.
 - [ ] **Step 2:** `cd agent && go test ./internal/opsign/ -run TestCanonicalize` → FAIL (undefined).
