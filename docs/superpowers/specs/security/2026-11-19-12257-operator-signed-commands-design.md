@@ -1,6 +1,6 @@
 ---
 issue: 12257
-status: draft v2 — revised after independent review; awaiting requester approval and maintainer agreement
+status: v2 approved by requester 2026-11-19 (phone-only signing; USB security keys deferred) — awaiting maintainer agreement
 ---
 
 # Operator-signed commands (#12257)
@@ -298,7 +298,8 @@ session; phase 2 adds an end-to-end session key bound in the envelope.
 
 ## Cut from v1
 
-Web/WebAuthn signing; site scope; rule `notBefore`; bundle expiry; per-type canonicalizers
+Web/WebAuthn signing; USB/NFC security keys (later: only through the mobile app or a separately
+installed desktop app, which render before signing — never through the web origin); site scope; rule `notBefore`; bundle expiry; per-type canonicalizers
 (replaced by whole-payload hashing + exclusions); rules for DR/offboarding/containment/AI; the
 ">500 devices becomes a rule" path (chunk instead).
 
