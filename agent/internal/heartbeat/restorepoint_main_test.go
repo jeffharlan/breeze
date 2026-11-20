@@ -2,10 +2,13 @@ package heartbeat
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/breeze-rmm/agent/internal/opsign"
 	"github.com/breeze-rmm/agent/internal/systemrestore"
 )
 
@@ -31,5 +34,16 @@ func TestMain(m *testing.M) {
 	// the machine's UI language; tests never read the CI host's. Tests that
 	// care set their own (setOSUILocaleForTest).
 	osUILocale = func() string { return "en-US" }
-	os.Exit(m.Run())
+	// Dispatch reads the operator trust pin. On a machine running a real agent
+	// its root-only state file reads as an unreadable pin and refuses every
+	// Tier A command, so no test may see it.
+	dir, err := os.MkdirTemp("", "heartbeat-opsign-")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	opsign.DefaultStorePath = func() string { return filepath.Join(dir, "state.json") }
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
 }

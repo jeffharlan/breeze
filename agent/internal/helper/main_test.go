@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/breeze-rmm/agent/internal/opsign"
 )
 
 // TestMain keeps the whole package off the developer's machine: Apply runs
@@ -16,6 +18,8 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	legacyBinaryPathFunc = func() string { return filepath.Join(dir, "no-legacy-helper") }
+	// Never the machine's real operator trust pin, should anything here reach the updater.
+	opsign.DefaultStorePath = func() string { return filepath.Join(dir, "opsign-state.json") }
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
