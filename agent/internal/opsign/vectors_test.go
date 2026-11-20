@@ -82,6 +82,12 @@ type payloadHashVector struct {
 	Hash        string          `json:"hash"`
 }
 
+type agentUpdateVector struct {
+	Name     string `json:"name"`
+	Manifest string `json:"manifest"`
+	Hash     string `json:"hash"`
+}
+
 type bundleVector struct {
 	Struct       bundleStruct `json:"struct"`
 	CanonicalB64 string       `json:"canonicalB64"`
@@ -103,6 +109,7 @@ type vectorFile struct {
 	Action      signedVector[actionStruct] `json:"action"`
 	Rule        signedVector[ruleStruct]   `json:"rule"`
 	RuleOrg     signedVector[ruleStruct]   `json:"ruleOrg"`
+	AgentUpdate []agentUpdateVector        `json:"agentUpdate"`
 }
 
 func parseVectorTime(t *testing.T, s string) time.Time {
@@ -208,6 +215,15 @@ var payloadCases = []struct{ name, commandType, payload string }{
 	{"empty", "file_delete", `{}`},
 }
 
+// agentUpdateCases are manifest text as a server serves it, deliberately not
+// canonical JSON (keys unsorted, a non-ASCII character, a trailing newline): a
+// twin that re-encodes the text before hashing it gets a different hash.
+var agentUpdateCases = []struct{ name, manifest string }{
+	{"one-file-manifest-as-served", `{"version":"1.2.3","component":"agent","platform":"windows","arch":"amd64",` +
+		`"url":"https://updates.example.invalid/releases/Général/breeze-agent-windows-amd64.exe",` +
+		`"checksum":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","size":31337}` + "\n"},
+}
+
 func b64(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
 
 func TestGenerateVectors(t *testing.T) {
@@ -243,6 +259,9 @@ func TestGenerateVectors(t *testing.T) {
 	}
 	if hashes["script-device-a"] != hashes["script-device-a-excluded-fields-differ"] {
 		t.Fatal("excluded script fields changed the hash")
+	}
+	for _, c := range agentUpdateCases {
+		f.AgentUpdate = append(f.AgentUpdate, agentUpdateVector{Name: c.name, Manifest: c.manifest, Hash: AgentUpdatePayloadHash([]byte(c.manifest))})
 	}
 
 	privs := map[string]*ecdsa.PrivateKey{}
@@ -384,6 +403,24 @@ func TestVectorsVerify(t *testing.T) {
 				t.Errorf("%s: got %q (%v), want %q", v.Name, got, err, v.Hash)
 			}
 			coveredHashes[v.Hash] = true
+		}
+	})
+
+	t.Run("agentUpdate", func(t *testing.T) {
+		if len(f.AgentUpdate) == 0 {
+			t.Fatal("no agent_update vectors")
+		}
+		for _, v := range f.AgentUpdate {
+			if got := AgentUpdatePayloadHash([]byte(v.Manifest)); got != v.Hash {
+				t.Errorf("%s: got %s, want %s", v.Name, got, v.Hash)
+			}
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(v.Manifest), &parsed); err != nil {
+				t.Fatalf("%s: %v", v.Name, err)
+			}
+			if canonical, err := Canonicalize(parsed); err != nil || AgentUpdatePayloadHash(canonical) == v.Hash {
+				t.Errorf("%s: hashing the re-encoded manifest must give a different hash (%v)", v.Name, err)
+			}
 		}
 	})
 

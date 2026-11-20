@@ -8,17 +8,24 @@ import (
 	"github.com/breeze-rmm/agent/internal/wire"
 )
 
-// updateApproval is an agent_update approval for artifactSHA on device A, signed
+// manifestA is the update manifest checkUpdate offers; manifestB differs from
+// it in one file hash.
+var (
+	manifestA = `{"version":"0.70.0","component":"agent","checksum":"` + hashA + `"}`
+	manifestB = `{"version":"0.70.0","component":"agent","checksum":"` + hashB + `"}`
+)
+
+// updateApproval is an agent_update approval of manifest on device A, signed
 // by the approver. Tests change fields before signing it.
-func (f *gateFixture) updateApproval(artifactSHA string) ActionApproval {
+func (f *gateFixture) updateApproval(manifest string) ActionApproval {
 	a := f.approval("agent_update", nil)
-	a.Entries[0].PayloadHash = artifactSHA
+	a.Entries[0].PayloadHash = AgentUpdatePayloadHash([]byte(manifest))
 	return a
 }
 
 func (f *gateFixture) checkUpdate(version string, vendorSigned bool, approval *Carrier) Decision {
 	return f.gate.CheckUpdate(UpdateCheck{
-		Version: version, ArtifactSHA256: hashA, VendorSigned: vendorSigned, Approval: approval, Clock: gateClock,
+		Version: version, Manifest: []byte(manifestA), VendorSigned: vendorSigned, Approval: approval, Clock: gateClock,
 	})
 }
 
@@ -67,7 +74,7 @@ func TestCheckFloor(t *testing.T) {
 
 func TestCheckUpdateFloorAppliesToApprovedDeploymentUpdates(t *testing.T) {
 	f := newGateFixtureWithFloor(t, ModeEnforce, "v0.70.0")
-	c := f.sign(f.updateApproval(hashA), f.ops.approver)
+	c := f.sign(f.updateApproval(manifestA), f.ops.approver)
 	wantRefused(t, f.checkUpdate("0.69.9", false, &c), wire.ErrCodeOpsignBelowFloor)
 }
 
@@ -83,8 +90,16 @@ func TestCheckUpdateDeploymentKeyNeedsApproval(t *testing.T) {
 		build func(f *gateFixture) *Carrier
 	}{
 		{"no approval", wire.ErrCodeOpsignUpdateUnapproved, func(*gateFixture) *Carrier { return nil }},
-		{"approval for another artifact", wire.ErrCodeOpsignPayloadMismatch, func(f *gateFixture) *Carrier {
-			c := f.sign(f.updateApproval(hashB), f.ops.approver)
+		{"approval of another manifest", wire.ErrCodeOpsignPayloadMismatch, func(f *gateFixture) *Carrier {
+			c := f.sign(f.updateApproval(manifestB), f.ops.approver)
+			return &c
+		}},
+		// The meaning before #12257's review: it left the rest of the manifest,
+		// such as a Mac's .pkg hash, unapproved.
+		{"approval of the file hash the manifest lists", wire.ErrCodeOpsignPayloadMismatch, func(f *gateFixture) *Carrier {
+			a := f.updateApproval(manifestA)
+			a.Entries[0].PayloadHash = hashA
+			c := f.sign(a, f.ops.approver)
 			return &c
 		}},
 		{"approval for another command type", wire.ErrCodeOpsignWrongTarget, func(f *gateFixture) *Carrier {
@@ -92,28 +107,28 @@ func TestCheckUpdateDeploymentKeyNeedsApproval(t *testing.T) {
 			return &c
 		}},
 		{"approval for another device", wire.ErrCodeOpsignWrongTarget, func(f *gateFixture) *Carrier {
-			a := f.updateApproval(hashA)
+			a := f.updateApproval(manifestA)
 			a.Entries[0].DeviceID = deviceB
 			c := f.sign(a, f.ops.approver)
 			return &c
 		}},
 		{"signature from another key", wire.ErrCodeOpsignBadSignature, func(f *gateFixture) *Carrier {
-			c := f.sign(f.updateApproval(hashA), f.ops.outsider)
+			c := f.sign(f.updateApproval(manifestA), f.ops.outsider)
 			return &c
 		}},
 		{"expired", wire.ErrCodeOpsignExpired, func(f *gateFixture) *Carrier {
-			a := f.updateApproval(hashA)
+			a := f.updateApproval(manifestA)
 			a.ExpiresAt = t0.Add(30 * time.Second)
 			c := f.sign(a, f.ops.approver)
 			return &c
 		}},
 		{"already used", wire.ErrCodeOpsignReplayed, func(f *gateFixture) *Carrier {
-			c := f.sign(f.updateApproval(hashA), f.ops.approver)
+			c := f.sign(f.updateApproval(manifestA), f.ops.approver)
 			wantAllowed(f.t, f.checkUpdate("0.70.0", false, &c))
 			return &c
 		}},
 		{"identity differs from the pin", wire.ErrCodeOpsignIdentityChanged, func(f *gateFixture) *Carrier {
-			c := f.sign(f.updateApproval(hashA), f.ops.approver)
+			c := f.sign(f.updateApproval(manifestA), f.ops.approver)
 			f.identity.OrgID = otherPartner
 			return &c
 		}},
@@ -127,7 +142,7 @@ func TestCheckUpdateDeploymentKeyNeedsApproval(t *testing.T) {
 
 	t.Run("valid approval", func(t *testing.T) {
 		f := newGateFixtureWithFloor(t, ModeEnforce, "v0.70.0")
-		c := f.sign(f.updateApproval(hashA), f.ops.approver)
+		c := f.sign(f.updateApproval(manifestA), f.ops.approver)
 		d := f.checkUpdate("0.70.0", false, &c)
 		wantAllowed(t, d)
 		if d.Mode != ModeEnforce {
@@ -171,7 +186,7 @@ func TestCheckUpdateNoPinAllows(t *testing.T) {
 		t.Error("identity must not be read when nothing is pinned")
 		return Identity{}, nil
 	}}
-	wantAllowed(t, g.CheckUpdate(UpdateCheck{Version: "garbage", ArtifactSHA256: hashA, Clock: gateClock}))
+	wantAllowed(t, g.CheckUpdate(UpdateCheck{Version: "garbage", Manifest: []byte(manifestA), Clock: gateClock}))
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("a device without a pin must not get a state file from an update check: %v", err)
 	}

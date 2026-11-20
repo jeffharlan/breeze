@@ -63,13 +63,19 @@ func (o operator) sign(t *testing.T, msg []byte) string {
 	return base64.StdEncoding.EncodeToString(append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...))
 }
 
-// approve returns an agent_update approval of artifactSHA for the test device.
-func (o operator) approve(t *testing.T, artifactSHA string) *opsign.Carrier {
+// approve returns an agent_update approval of the manifest text for the test device.
+func (o operator) approve(t *testing.T, manifest string) *opsign.Carrier {
+	t.Helper()
+	return o.approveHash(t, opsign.AgentUpdatePayloadHash([]byte(manifest)))
+}
+
+// approveHash returns an agent_update approval carrying payloadHash.
+func (o operator) approveHash(t *testing.T, payloadHash string) *opsign.Carrier {
 	t.Helper()
 	issued := time.Now().UTC().Truncate(time.Second).Add(-time.Minute)
 	canonical, err := opsign.ActionApproval{
 		ApprovalID: "00112233445566778899aabbccddeeff", PartnerID: opsignPartner, CommandType: "agent_update",
-		Entries:  []opsign.Entry{{DeviceID: opsignDevice, Hostname: opsignHost, PayloadHash: artifactSHA}},
+		Entries:  []opsign.Entry{{DeviceID: opsignDevice, Hostname: opsignHost, PayloadHash: payloadHash}},
 		IssuedAt: issued, ExpiresAt: issued.Add(time.Hour), KeyID: o.key.KeyID,
 	}.CanonicalBytes()
 	if err != nil {
@@ -117,27 +123,45 @@ func pinOperatorTrust(t *testing.T, mode opsign.Mode, floor string) operator {
 	return op
 }
 
-// deploymentSignedInfo is a download response whose manifest is signed by a
-// deployment key (not the vendor's), and the pinned-key entry that trusts it.
-// The caller sets info.URL; the signed manifest names a fixed canonical URL.
-func deploymentSignedInfo(t *testing.T, version string, content []byte) (downloadInfo, string) {
+// deploymentSigned is a download response offering the file whose hash is
+// checksum, with manifest signed by a new deployment key (not the vendor's),
+// and the pinned-key entry that trusts that key. The caller sets info.URL.
+func deploymentSigned(t *testing.T, manifest any, checksum string) (downloadInfo, string) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	manifest := updateManifest{
-		Version: version, Component: "agent", Platform: manifestPlatform(), Arch: runtime.GOARCH,
-		URL: "https://updates.example.invalid/agent", Checksum: artifactSHA(content), Size: int64(len(content)),
 	}
 	payload, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return downloadInfo{
-		Checksum: manifest.Checksum, Manifest: string(payload), SigningKeyID: deployKeyID,
+		Checksum: checksum, Manifest: string(payload), SigningKeyID: deployKeyID,
 		ManifestSignature: base64.StdEncoding.EncodeToString(ed25519.Sign(priv, payload)),
 	}, deployKeyID + ":" + base64.StdEncoding.EncodeToString(pub)
+}
+
+// deploymentSignedInfo is deploymentSigned for a one-file agent manifest, the
+// shape the server signs with a deployment key today. The signed manifest
+// names a fixed canonical URL.
+func deploymentSignedInfo(t *testing.T, version string, content []byte) (downloadInfo, string) {
+	t.Helper()
+	return deploymentSigned(t, updateManifest{
+		Version: version, Component: "agent", Platform: manifestPlatform(), Arch: runtime.GOARCH,
+		URL: "https://updates.example.invalid/agent", Checksum: artifactSHA(content), Size: int64(len(content)),
+	}, artifactSHA(content))
+}
+
+// deploymentSignedRelease is deploymentSigned for a release manifest listing
+// this platform's agent binary, content, and the macOS installer package with
+// hash pkgSHA, which is what a Mac installs.
+func deploymentSignedRelease(t *testing.T, version string, content []byte, pkgSHA string) (downloadInfo, string) {
+	t.Helper()
+	return deploymentSigned(t, releaseArtifactManifest{SchemaVersion: 1, Release: "v" + version, Assets: []releaseArtifactAsset{
+		{Name: rollbackAssetName("agent"), SHA256: artifactSHA(content), Size: int64(len(content))},
+		{Name: pkgAssetName(), SHA256: pkgSHA, Size: 1},
+	}}, artifactSHA(content))
 }
 
 func artifactSHA(content []byte) string {
@@ -224,17 +248,25 @@ func TestDeploymentSignedUpdateNeedsOperatorApproval(t *testing.T) {
 		f.wantUntouched(t)
 	})
 
-	t.Run("accepted with an approval of this artifact, once", func(t *testing.T) {
+	t.Run("accepted with an approval of this manifest, once", func(t *testing.T) {
 		op := pinOperatorTrust(t, opsign.ModeEnforce, "v1.0.0")
-		f := newUpdateFixture(t, offer(op.approve(t, artifactSHA(content))), content, cfg)
+		f := newUpdateFixture(t, offer(op.approve(t, signed.Manifest)), content, cfg)
 		wantDownloaded(t, f.u, "1.2.3")
 		_, err := f.u.DownloadBinary("1.2.3")
 		wantRefusal(t, err, "opsign_replayed")
 	})
 
-	t.Run("refused when the approval is for another artifact", func(t *testing.T) {
+	t.Run("refused when the approval is for another manifest", func(t *testing.T) {
 		op := pinOperatorTrust(t, opsign.ModeEnforce, "v1.0.0")
-		f := newUpdateFixture(t, offer(op.approve(t, artifactSHA([]byte("something else")))), content, cfg)
+		other, _ := deploymentSignedInfo(t, "1.2.3", []byte("something else"))
+		f := newUpdateFixture(t, offer(op.approve(t, other.Manifest)), unusableBytes(content), cfg)
+		_, err := f.u.DownloadBinary("1.2.3")
+		wantRefusal(t, err, "opsign_payload_mismatch")
+	})
+
+	t.Run("refused when the approval is of the binary's hash alone", func(t *testing.T) {
+		op := pinOperatorTrust(t, opsign.ModeEnforce, "v1.0.0")
+		f := newUpdateFixture(t, offer(op.approveHash(t, artifactSHA(content))), unusableBytes(content), cfg)
 		_, err := f.u.DownloadBinary("1.2.3")
 		wantRefusal(t, err, "opsign_payload_mismatch")
 	})
@@ -247,6 +279,41 @@ func TestDeploymentSignedUpdateNeedsOperatorApproval(t *testing.T) {
 
 	t.Run("no pin lets it through", func(t *testing.T) {
 		f := newUpdateFixture(t, offer(nil), content, cfg)
+		wantDownloaded(t, f.u, "1.2.3")
+	})
+}
+
+// An approval covers the whole signed manifest text. Approving the binary's
+// hash alone let a server holding the deployment key keep the approved binary
+// and swap the .pkg that a Mac installs as root.
+func TestUpdateApprovalCoversTheWholeManifest(t *testing.T) {
+	content := []byte("agent 1.2.3 built by the deployment")
+	oneFile, _ := deploymentSignedInfo(t, "1.2.3", content)
+	withPkg, withPkgKey := deploymentSignedRelease(t, "1.2.3", content, artifactSHA([]byte("the pkg the operator saw")))
+	swappedPkg, swappedKey := deploymentSignedRelease(t, "1.2.3", content, artifactSHA([]byte("a pkg nobody saw")))
+	offer := func(info downloadInfo, approval *opsign.Carrier) func(string) downloadInfo {
+		return func(host string) downloadInfo {
+			info.URL, info.OperatorApproval = "http://"+host+"/binary", approval
+			return info
+		}
+	}
+
+	for name, approved := range map[string]downloadInfo{
+		"approved with another .pkg":      withPkg,
+		"approved as a one-file manifest": oneFile,
+	} {
+		t.Run(name, func(t *testing.T) {
+			op := pinOperatorTrust(t, opsign.ModeEnforce, "v1.0.0")
+			f := newUpdateFixture(t, offer(swappedPkg, op.approve(t, approved.Manifest)), unusableBytes(content),
+				Config{PinnedManifestPubKeys: []string{swappedKey}})
+			_, err := f.u.DownloadBinary("1.2.3")
+			wantRefusal(t, err, "opsign_payload_mismatch")
+		})
+	}
+
+	t.Run("the approved manifest itself is accepted", func(t *testing.T) {
+		op := pinOperatorTrust(t, opsign.ModeEnforce, "v1.0.0")
+		f := newUpdateFixture(t, offer(withPkg, op.approve(t, withPkg.Manifest)), content, Config{PinnedManifestPubKeys: []string{withPkgKey}})
 		wantDownloaded(t, f.u, "1.2.3")
 	})
 }

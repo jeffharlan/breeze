@@ -448,5 +448,12 @@
     },
     "canonicalB64": "YnJlZXplLW9wZXJhdG9yLWFwcHJvdmFsLXYxCmtpbmQ9cnVsZQpydWxlSWQ9YTBiMWMyZDNlNGY1MDYxNzI4Mzk0YTViNmM3ZDhlOWYKcnVsZUVwb2NoPTUKcGFydG5lcklkPTBhMWIyYzNkLTRlNWYtNGE2Yi04YzdkLTllMGYxYTJiM2M0ZApzY29wZT1vcmc6MTExMTExMTEtMjIyMi00MzMzLTg0NDQtNTU1NTU1NTU1NTU1CmNvbW1hbmRUeXBlPXNjcmlwdAptYXRjaD1wYXlsb2FkSGFzaGVzCm1hdGNoSXRlbXM9MgplYWIwNDc4Njk5MTg0M2FhNWZmYzhmOGZhZDc4YWM2OWVjNzU5N2M3ZWNhNDUxZTljNWYzNzg1Y2M1NDhkYzk3CmZhMjZjYzRlZWNiNGI5ZDQ3YTU0Yjg3YjU5MDI4ZDE3MzYxZmVjYTk3ZDhmY2JlNGYwZjY1MGQyMzIyZDE0ZGIKb25jZT1mYWxzZQpub3RBZnRlcj0yMDI2LTEyLTE5VDEyOjAwOjAwWgprZXlJZD1lOTJjODUxYTE3MGI2ZTlhNmRkNTA4NGMxMzYwNzdmMw==",
     "signatureB64": "mBT1jwQTBvzelo9XwlPIXnxhXZBNuX4TtxOLVDLB8wp2SrTtunvZDWbqnnMh+2S+JmisXnElgLpmgNRsF6cfow=="
-  }
+  },
+  "agentUpdate": [
+    {
+      "name": "one-file-manifest-as-served",
+      "manifest": "{\"version\":\"1.2.3\",\"component\":\"agent\",\"platform\":\"windows\",\"arch\":\"amd64\",\"url\":\"https://updates.example.invalid/releases/Général/breeze-agent-windows-amd64.exe\",\"checksum\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"size\":31337}\n",
+      "hash": "0391931c925110d01ba04ee519da838383372921349d793d634c800a82b4588c"
+    }
+  ]
 }

@@ -1240,7 +1240,7 @@ type downloadInfo struct {
 	Manifest          string `json:"manifest"`
 	ManifestSignature string `json:"manifestSignature"`
 	SigningKeyID      string `json:"signingKeyId"`
-	// OperatorApproval is the operator's approval of this artifact, which a
+	// OperatorApproval is the operator's approval of Manifest, which a
 	// manifest signed only by a deployment key needs under an enforce-mode
 	// trust bundle (#12257).
 	OperatorApproval *opsign.Carrier `json:"operatorApproval,omitempty"`
@@ -1382,12 +1382,13 @@ func operatorTrustError(d opsign.Decision, component, version string) error {
 
 // checkOperatorTrust is the last step of verifying a manifest, after the
 // signature and every field check: the version floor, and for a manifest signed
-// only by a deployment key, the operator's approval of this artifact (#12257).
-// Every install path verifies its manifest here, so every caller inherits it.
+// only by a deployment key, the operator's approval of the signed manifest text
+// itself, so it also covers the .pkg a Mac installs from it (#12257). Every
+// install path verifies its manifest here, so every caller inherits it.
 func checkOperatorTrust(manifest updateManifest, keyID string, info downloadInfo) (updateManifest, error) {
 	_, vendorSigned := embeddedManifestPublicKeys[keyID]
 	d := operatorGate().CheckUpdate(opsign.UpdateCheck{
-		Version: manifest.Version, ArtifactSHA256: manifest.Checksum,
+		Version: manifest.Version, Manifest: []byte(info.Manifest),
 		VendorSigned: vendorSigned, Approval: info.OperatorApproval, Clock: time.Now(),
 	})
 	if err := operatorTrustError(d, manifest.Component, manifest.Version); err != nil {

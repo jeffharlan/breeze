@@ -38,3 +38,13 @@ func PayloadHash(commandType string, payload map[string]any) (string, error) {
 	sum := sha256.Sum256(canonical)
 	return hex.EncodeToString(sum[:]), nil
 }
+
+// AgentUpdatePayloadHash is the payload hash of an agent_update approval: the
+// lowercase hex SHA-256 of the update manifest text exactly as served, the same
+// bytes its signature is checked over, never re-encoded. Binding the whole
+// signed text covers the version and every file it lists (the macOS .pkg the
+// updater installs included), where one artifact's hash covered one file.
+func AgentUpdatePayloadHash(manifest []byte) string {
+	sum := sha256.Sum256(manifest)
+	return hex.EncodeToString(sum[:])
+}

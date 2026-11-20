@@ -92,17 +92,19 @@ func (g *Gate) Check(commandType string, payload map[string]any, clock time.Time
 }
 
 // UpdateCheck describes an agent, helper or watchdog install the updater is
-// about to make. Approval is the operator approval the download response
-// carried, if any.
+// about to make. Manifest is the manifest text whose signature the updater
+// just verified, byte for byte. Approval is the operator approval the download
+// response carried, if any.
 type UpdateCheck struct {
-	Version, ArtifactSHA256 string
-	VendorSigned            bool
-	Approval                *Carrier
-	Clock                   time.Time
+	Version      string
+	Manifest     []byte
+	VendorSigned bool
+	Approval     *Carrier
+	Clock        time.Time
 }
 
 // agentUpdateType is the command type of an approval for a deployment-signed
-// update. The approval's payload hash is the artifact's SHA-256 itself.
+// update; its payload hash is AgentUpdatePayloadHash of the manifest.
 const agentUpdateType = "agent_update"
 
 // CheckUpdate applies spec section 4. Nothing installs below the pinned
@@ -123,7 +125,7 @@ func (g *Gate) CheckUpdate(u UpdateCheck) Decision {
 		if !ok {
 			return wire.ErrCodeOpsignIdentityChanged, identityChangedReason
 		}
-		return g.verifyApproval(pin, bundle, id, *u.Approval, agentUpdateType, func() (string, error) { return u.ArtifactSHA256, nil }, u.Clock)
+		return g.verifyApproval(pin, bundle, id, *u.Approval, agentUpdateType, func() (string, error) { return AgentUpdatePayloadHash(u.Manifest), nil }, u.Clock)
 	})
 }
 

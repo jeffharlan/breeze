@@ -177,6 +177,15 @@ characters rejected, sorted lists). Payload hashing: **the whole command payload
 change what runs (e.g. a presigned download URL — the required SHA-256 is bound instead). New
 payload fields are therefore covered by default.
 
+**Exception, `agent_update`:** the payload hash is the lowercase hex SHA-256 of the UTF-8 bytes of
+the update manifest text, exactly the bytes the manifest signature is checked over, never parsed
+and re-encoded. Binding the whole signed text covers the release version and every file it lists
+(agent binary, macOS `.pkg`, helpers, watchdog), so nothing it names can be swapped. Each download
+response carries its own manifest and approval: today the server signs one manifest per component
+with a deployment key, so one release still needs one envelope per component (step 3 decides
+whether to sign one release-wide manifest instead). Shared Go/TS test vector: `agentUpdate` in
+`agent/internal/opsign/testdata/operator_signing_v1_vectors.json`.
+
 **Action approval** (one tap; per-device entries because some values, like sourced script
 parameters, are resolved per device):
 
@@ -234,7 +243,7 @@ Enforced inside `agent/internal/updater` so every caller (heartbeat upgrade offe
 helper/watchdog upgrades, the watchdog's own channel) inherits it. Under `enforce`:
 
 - A manifest signed only by a deployment key needs an action approval of kind `agent_update` over
-  the artifact SHA-256.
+  the manifest text (§3, exception).
 - Nothing installs below the bundle's `minAgentVersion`, whoever signed it (closes downgrade to a
   gate-less release, including via `agent_rollback_v1` and the watchdog).
 - The watchdog reads the same pinned state and applies the same check.
@@ -246,7 +255,12 @@ This ships in the **first** enforce-capable agent.
 The server sends the app the envelope **and** the full payloads. The app:
 
 1. Parses the envelope; refuses unknown kinds or domains.
-2. Recomputes every payload hash from the payloads itself; any mismatch → refuse.
+2. Recomputes every payload hash from the payloads itself; any mismatch → refuse. For
+   `agent_update` it must also refuse a manifest it cannot fully decode: any field name it does not
+   know, any repeated field, any file name listed twice. The agent reads manifests loosely (field
+   names in any case, last repeated field wins, first matching file entry wins), and the holder of
+   the deployment key writes the manifest, so the phone must never show one reading of the text
+   while the agent installs another.
 3. Renders the decoded action: script text, URLs + checksums, file paths, device names, rule scope,
    expiry, and for bundle changes the exact key fingerprints added/removed.
 4. Only after the operator confirms with biometrics, signs with the operator signing key.

@@ -179,7 +179,7 @@ func TestGateRefusesWhileTrustResetAwaitsItsBundle(t *testing.T) {
 				"unsigned script":           f.check(scriptPayload()),
 				"signed script":             f.check(f.signedScript()),
 				"vendor-signed update":      f.gate.CheckUpdate(UpdateCheck{Version: "v1.0.0", VendorSigned: true, Clock: gateClock}),
-				"unapproved deployment one": f.gate.CheckUpdate(UpdateCheck{Version: "v0.0.1", ArtifactSHA256: hashA, Clock: gateClock}),
+				"unapproved deployment one": f.gate.CheckUpdate(UpdateCheck{Version: "v0.0.1", Manifest: []byte(manifestA), Clock: gateClock}),
 				"floor check":               f.gate.CheckFloor("v1.0.0"),
 			} {
 				wantRefused(t, d, wire.ErrCodeOpsignPinUnreadable)
