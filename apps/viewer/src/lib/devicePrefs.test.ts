@@ -7,8 +7,8 @@ import {
   sanitizeDevicePrefs,
   saveKeyboardMode,
   saveDevicePrefs,
-  type PrefsStore,
 } from './devicePrefs';
+import type { PrefsStore } from '@breeze/remote-desktop-ui';
 
 const DEVICE = '3f1c2a4e-9b7d-4c1e-8a2f-0d9e8c7b6a51';
 

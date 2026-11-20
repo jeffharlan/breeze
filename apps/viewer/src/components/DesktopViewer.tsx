@@ -1,10 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { type ConnectionParams } from '@breeze/remote-desktop-ui';
+import { type ConnectionParams, type RemoteDesktopHost } from '@breeze/remote-desktop-ui';
 import { exchangeDesktopConnectCode, exchangeVncConnectCode } from '@breeze/remote-desktop-ui';
 import { createSessionHangUp, hangUpThenClose } from '@breeze/remote-desktop-ui';
-import { createNativeSessionEnd } from '../lib/nativeSessionEnd';
 import { scaleVideoCoords, isWebRTCSupported, announceViewerReconnect, AgentSessionError, RelayRequiredError, SessionEndedError, SESSION_ENDED_DEFAULT_MESSAGE, type AuthenticatedConnectionParams } from '@breeze/remote-desktop-ui';
 import { IceFailureBudget, neverConnectedStopStep } from '@breeze/remote-desktop-ui';
 import { errorCardFor, parseSessionEndingMessage, serverEndReasonText, sessionEndedCardMessage, sessionEndingText, type ErrorCardKind } from '@breeze/remote-desktop-ui';
@@ -39,7 +36,6 @@ import { ReliableInputRouter } from '@breeze/remote-desktop-ui';
 import { GeometryHold } from '@breeze/remote-desktop-ui';
 import { DEFAULT_WHEEL_ACCUMULATOR, wheelDeltaToSteps } from '@breeze/remote-desktop-ui';
 import { ClipboardSync, type ClipboardSyncState } from '@breeze/remote-desktop-ui';
-import { createTauriClipboardIO } from '../lib/clipboardIO';
 import { clipboardFailureMessage, type ClipboardChipInput } from '@breeze/remote-desktop-ui';
 import { parseClipboardPolicy, type VncClipboardState } from '@breeze/remote-desktop-ui';
 import {
@@ -73,7 +69,7 @@ import {
 import { mediaClassName, scrollerClassName, type ViewScaling } from '@breeze/remote-desktop-ui';
 import type { StatsSample } from '@breeze/remote-desktop-ui';
 import { statsOverlayRows } from '@breeze/remote-desktop-ui';
-import { getTauriPrefsStore, loadDevicePrefs, loadKeyboardMode, saveDevicePrefs, saveKeyboardMode, type DevicePrefs } from '../lib/devicePrefs';
+import { loadDevicePrefs, loadKeyboardMode, saveDevicePrefs, saveKeyboardMode, type DevicePrefs } from '../lib/devicePrefs';
 import { DEFAULT_KEYBOARD_MODE, effectiveKeyboardMode, keyboardModeSupport, type KeyboardMode } from '@breeze/remote-desktop-ui';
 import { CompositionCapture, deliverComposedText } from '@breeze/remote-desktop-ui';
 import { captureFramePng, screenshotFailureMessage } from '@breeze/remote-desktop-ui';
@@ -98,9 +94,10 @@ function toggleDocumentFullscreen(): void {
   // toggleFullscreen) so a "hotkey does nothing" report is diagnosable.
   fs.catch((err) => console.warn('Fullscreen hotkey failed:', err));
 }
-const clipboardIO = createTauriClipboardIO();
 
 interface Props {
+  /** Fixed for the life of the component: the effects and callbacks below capture it once. */
+  host: RemoteDesktopHost;
   params: ConnectionParams;
   onDisconnect: () => void;
   onError: (msg: string) => void;
@@ -204,7 +201,7 @@ function exchangeDesktopConnectCodeOnce(
   return promise;
 }
 
-export default function DesktopViewer({ params, onDisconnect, onError }: Props) {
+export default function DesktopViewer({ host, params, onDisconnect, onError }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const wsRef = useRef<WebSocketSessionWrapper | null>(null);
@@ -284,7 +281,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   const hangUpRef = useRef(createSessionHangUp());
   // #12129: tells the native close hook which session to end when the window
   // closes. Every assignment to authRef goes through its `track`.
-  const nativeSessionEndRef = useRef(createNativeSessionEnd());
+  const nativeSessionEndRef = useRef(host.createSessionEnd());
   // Set while handleDisconnect waits for End, so a second click does nothing.
   const hangingUpRef = useRef(false);
   // #12129: bumped by every connect effect run (a new session, or this window
@@ -561,8 +558,8 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         },
         // The policy rides on the tunnel info; without one the clipboard stays off.
         clipboard: {
-          readLocalText: () => clipboardIO.readText(),
-          writeLocalText: (text) => clipboardIO.writeText(text),
+          readLocalText: () => host.clipboard.readText(),
+          writeLocalText: (text) => host.clipboard.writeText(text),
           hasFocus: () => document.hasFocus(),
           onChange: (s) => {
             if (!isStale()) setVncClipboardState(s);
@@ -844,7 +841,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
           clipboardSyncRef.current?.close();
           const sync = new ClipboardSync({
             channel,
-            io: clipboardIO,
+            io: host.clipboard,
             hasFocus: () => document.hasFocus(),
             lastInputAt: () => lastRemoteInputAtRef.current,
             lastCopyIntentAt: () => lastCopyIntentAtRef.current,
@@ -918,7 +915,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         setStatus('connected');
         setHostname(deviceHostname);
         if (osType) setRemoteOs(osType);
-        invoke('update_session_hostname', { hostname: deviceHostname }).catch((err) => {
+        host.setTitle(deviceHostname).catch((err) => {
           console.warn('Failed to update session hostname:', err);
         });
         setConnectedAt(new Date());
@@ -1334,8 +1331,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
         // Set hostname + OS from exchange response (available for all transports)
         if (exchange.hostname) {
           setHostname(exchange.hostname);
-          // Window title set from Rust in update_session_hostname
-          invoke('update_session_hostname', { hostname: exchange.hostname }).catch((err) => {
+          host.setTitle(exchange.hostname).catch((err) => {
             console.warn('Failed to update session hostname:', err);
           });
         }
@@ -1434,7 +1430,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
 	      if (sessionRegisteredRef.current) {
 	        sessionRegisteredRef.current = false;
-	        invoke('unregister_session').catch((err) => {
+	        host.unregisterSession().catch((err) => {
 	          console.error('Failed to unregister desktop session on unmount:', err);
 	        });
 	      }
@@ -1447,17 +1443,17 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	    if (status === 'connected' && !sessionRegisteredRef.current) {
 	      sessionRegisteredRef.current = true;
 	      if (params.mode === 'desktop') {
-	        invoke('register_session', { sessionId: params.sessionId }).catch((err) => {
+	        host.registerSession(params.sessionId).catch((err) => {
 	          console.error('Failed to register desktop session:', err);
 	        });
 	        if (params.deviceId) {
-	          invoke('register_device', { deviceId: params.deviceId }).catch((err) => {
+	          host.registerDevice(params.deviceId).catch((err) => {
 	            console.error('Failed to register desktop device:', err);
 	          });
 	        }
 	      } else {
 	        // VNC mode: register by deviceId so duplicate-link detection works.
-	        invoke('register_device', { deviceId: params.deviceId }).catch((err) => {
+	        host.registerDevice(params.deviceId).catch((err) => {
 	          console.error('Failed to register vnc device:', err);
 	        });
 	      }
@@ -1465,7 +1461,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 	    }
 	    if (status !== 'connected' && status !== 'reconnecting' && sessionRegisteredRef.current) {
 	      sessionRegisteredRef.current = false;
-	      invoke('unregister_session').catch((err) => {
+	      host.unregisterSession().catch((err) => {
 	        console.error('Failed to unregister desktop session:', err);
 	      });
 	    }
@@ -2305,20 +2301,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     // Reset before the awaits below: view-only switched on during them sets
     // it, and that must not be undone here.
     pasteCancelRef.current = false;
-    let text: string;
-    try {
-      // Use Tauri native clipboard to bypass macOS "Allow Paste" prompt
-      const { readText } = await import('@tauri-apps/plugin-clipboard-manager');
-      text = await readText();
-    } catch (tauriErr) {
-      console.warn('Tauri clipboard read failed, trying browser API:', tauriErr);
-      try {
-        text = await navigator.clipboard.readText();
-      } catch (browserErr) {
-        console.warn('Browser clipboard read also failed:', browserErr);
-        return;
-      }
-    }
+    const text = await host.readClipboardText();
     if (!text) return;
 
     // The handshake is sent the moment the control channel opens, but a paste
@@ -2752,7 +2735,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
 
   // Per-device prefs (#8241): local only, keyed by the deep link's device id.
   const rememberDevicePrefs = useCallback((patch: DevicePrefs) => {
-    void getTauriPrefsStore().then((store) => saveDevicePrefs(store, params.deviceId, patch));
+    void host.getPrefsStore().then((store) => saveDevicePrefs(store, params.deviceId, patch));
   }, [params.deviceId]);
 
   const handleToggleAudio = useCallback(() => {
@@ -2856,7 +2839,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
       return;
     }
     try {
-      await clipboardIO.writeImage(new Uint8Array(await blob.arrayBuffer()), 'png');
+      await host.clipboard.writeImage(new Uint8Array(await blob.arrayBuffer()), 'png');
       setStatusNotice('Screenshot copied to the clipboard.');
     } catch (err) {
       console.warn('Screenshot copy failed:', err);
@@ -2874,7 +2857,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     }
     try {
       const bytes = new Uint8Array(await blob.arrayBuffer());
-      const path = await invoke<string>('save_screenshot', bytes);
+      const path = await host.saveScreenshot(bytes);
       setStatusNotice(`Screenshot saved to ${path}`);
     } catch (err) {
       console.warn('Screenshot save failed:', err);
@@ -2892,7 +2875,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     keyboardModeChosenRef.current = true;
     // The release and capture reset run in the mode-change effect.
     setKeyboardMode(mode);
-    void getTauriPrefsStore().then((store) => saveKeyboardMode(store, params.deviceId, mode));
+    void host.getPrefsStore().then((store) => saveKeyboardMode(store, params.deviceId, mode));
   }, [params.deviceId]);
 
   const handleViewScalingChange = useCallback((mode: ViewScaling) => {
@@ -2904,7 +2887,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   // was, or when the store cannot be read.
   useEffect(() => {
     let cancelled = false;
-    void getTauriPrefsStore().then(async (store) => {
+    void host.getPrefsStore().then(async (store) => {
       const prefs = await loadDevicePrefs(store, params.deviceId);
       if (cancelled) return;
       if (prefs.remapCmdCtrl !== undefined) {
@@ -2968,7 +2951,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    getCurrentWebviewWindow().listen('session-window-closing', () => {
+    host.onWindowClosing(() => {
       userDisconnectRef.current = true;
       stopReconnect();
     }).then((fn) => {
@@ -2991,7 +2974,7 @@ export default function DesktopViewer({ params, onDisconnect, onError }: Props) 
     reconnectInFlightRef.current = false;
     if (sessionRegisteredRef.current) {
       sessionRegisteredRef.current = false;
-      invoke('unregister_session').catch((err) => {
+      host.unregisterSession().catch((err) => {
         console.error('Failed to unregister desktop session on disconnect:', err);
       });
     }

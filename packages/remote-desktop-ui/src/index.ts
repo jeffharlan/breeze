@@ -13,6 +13,7 @@ export * from './desktopAccess';
 export * from './displayScaling';
 export * from './frameCounter';
 export * from './geometryHold';
+export * from './host';
 export * from './iceFailure';
 export * from './iceTrickle';
 export * from './inputCapabilities';

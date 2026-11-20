@@ -7,6 +7,7 @@ import UpdateIndicator from './components/UpdateIndicator';
 import { QuitConfirm } from './components/QuitConfirm';
 import { parseDeepLink, type ConnectionParams } from '@breeze/remote-desktop-ui';
 import { createDeepLinkGate, deepLinkKey } from './lib/deepLinkGate';
+import { tauriHost } from './lib/tauriHost';
 
 /**
  * Main window: hidden, serves as process anchor (Tauri requires at least one window).
@@ -155,6 +156,7 @@ export default function App() {
         <UpdateIndicator />
         <QuitConfirm />
         <DesktopViewer
+          host={tauriHost}
           params={params}
           onDisconnect={handleDisconnect}
           onError={handleError}

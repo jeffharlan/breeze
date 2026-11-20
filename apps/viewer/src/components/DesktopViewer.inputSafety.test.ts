@@ -87,7 +87,7 @@ describe('DesktopViewer input safety wiring', () => {
   });
 
   it('closes the clipboard controller on unmount', () => {
-    const unmount = source.indexOf("invoke('unregister_session')");
+    const unmount = source.indexOf('host.unregisterSession()');
     const close = source.lastIndexOf('clipboardSyncRef.current?.close();', unmount);
     expect(close).toBeGreaterThan(source.indexOf('const oldVnc = vncSessionRef.current;'));
   });

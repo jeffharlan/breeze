@@ -10,6 +10,7 @@
 
 import { isViewScaling, type ViewScaling } from '@breeze/remote-desktop-ui';
 import { DEFAULT_KEYBOARD_MODE, isKeyboardMode, type KeyboardMode } from '@breeze/remote-desktop-ui';
+import type { PrefsStore } from '@breeze/remote-desktop-ui';
 
 export interface DevicePrefs {
   remapCmdCtrl?: boolean;
@@ -18,13 +19,6 @@ export interface DevicePrefs {
   keyboardMode?: KeyboardMode;
 }
 
-/** The subset of the Tauri Store API used here, so tests can swap it. */
-export interface PrefsStore {
-  get(key: string): Promise<unknown>;
-  set(key: string, value: unknown): Promise<void>;
-}
-
-const STORE_FILE = 'viewer-prefs.json';
 const DEFAULTS_KEY = 'defaults';
 const DEVICE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -126,26 +120,4 @@ export function createMemoryPrefsStore(initial: Record<string, unknown> = {}): P
     get: async (key) => data.get(key),
     set: async (key, value) => { data.set(key, value); },
   };
-}
-
-let tauriStore: Promise<PrefsStore | null> | null = null;
-
-/**
- * The viewer's prefs store, shared by every session window (the plugin hands
- * back the same store for the same file). Null when the plugin is unavailable.
- */
-export function getTauriPrefsStore(log: Log = defaultLog): Promise<PrefsStore | null> {
-  if (!tauriStore) {
-    tauriStore = import('@tauri-apps/plugin-store')
-      .then(({ load }) => load(STORE_FILE, { defaults: {}, autoSave: 200 }))
-      .then((store): PrefsStore => ({
-        get: (key) => store.get(key),
-        set: (key, value) => store.set(key, value),
-      }))
-      .catch((err) => {
-        log(`store unavailable: ${err instanceof Error ? err.message : String(err)}`);
-        return null;
-      });
-  }
-  return tauriStore;
 }

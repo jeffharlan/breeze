@@ -144,15 +144,15 @@ describe('stats overlay (W05, #8241)', () => {
 });
 
 describe('screenshot (W05, #8241)', () => {
-  it('captures from the active transport and stays local (clipboard IO or the save command)', () => {
+  it('captures from the active transport and stays local (clipboard IO or the host save)', () => {
     const shot = body('captureScreenshot');
     expect(shot).toMatch(/kind: 'video'/);
     expect(shot).toMatch(/kind: 'canvas'/);
     expect(shot).toMatch(/kind: 'vnc'/);
     const copy = body('handleCopyScreenshot');
-    expect(copy).toMatch(/clipboardIO\.writeImage\(/);
+    expect(copy).toMatch(/host\.clipboard\.writeImage\(/);
     const save = body('handleSaveScreenshot');
-    expect(save).toMatch(/invoke<string>\('save_screenshot', bytes\)/);
+    expect(save).toMatch(/host\.saveScreenshot\(bytes\)/);
     for (const fn of [shot, copy, save]) expect(fn).not.toMatch(/fetch\(|apiUrl/);
   });
 });

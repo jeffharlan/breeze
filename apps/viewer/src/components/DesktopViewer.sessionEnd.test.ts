@@ -122,7 +122,7 @@ describe('hang-up ends the session as the operator (#11931)', () => {
     // A page close listener makes Tauri hold every close until the page
     // destroys the window, which a hung page never does.
     expect(source).not.toContain('.onCloseRequested(');
-    expect(source).toContain("listen('session-window-closing'");
+    expect(source).toContain('host.onWindowClosing(');
   });
 
   it('every auth the viewer adopts is reported to the native close hook', () => {
