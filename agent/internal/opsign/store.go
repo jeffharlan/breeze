@@ -25,6 +25,9 @@ var (
 	// ErrUnexpectedBundle means the bundle offered to SavePin is not the one the
 	// administrator named in ClearPin.
 	ErrUnexpectedBundle = errors.New("opsign: bundle is not the one the administrator expects")
+	// ErrPinChanged means the pin changed between the caller reading it and
+	// SavePin; the caller's judgement no longer applies. The next offer retries.
+	ErrPinChanged = errors.New("opsign: the pinned bundle changed while this one was being checked")
 )
 
 // DefaultStorePath is a var so tests can point the agent at a temp directory.
@@ -323,11 +326,13 @@ func (s *Store) LoadTrust() (pin *Pin, awaiting string, err error) {
 	return &p, "", nil
 }
 
-// SavePin replaces the pin and consumes the fingerprint ClearPin asked for. It
-// refuses an unreadable file (ClearPin is the one repair path), a bundle other
-// than the expected one, and a pin Load would later reject, which would lock
-// the device out of Tier A.
-func (s *Store) SavePin(p Pin) error {
+// SavePin replaces the pin whose fingerprint is replaces ("" for no pin) and
+// consumes the fingerprint ClearPin asked for. It refuses an unreadable file
+// (ClearPin is the one repair path), a bundle other than the expected one, a
+// pin Load would later reject, which would lock the device out of Tier A, and,
+// with ErrPinChanged, a pin that is no longer the one the caller judged p
+// against: another process (`trust reset`) may have changed it since.
+func (s *Store) SavePin(p Pin, replaces string) error {
 	if err := p.check(); err != nil {
 		return fmt.Errorf("opsign: refusing to save an unreadable pin: %w", err)
 	}
@@ -338,6 +343,13 @@ func (s *Store) SavePin(p Pin) error {
 	defer end()
 	if s.loadErr != nil {
 		return s.loadErr
+	}
+	current := ""
+	if s.st.Pin != nil {
+		current = s.st.Pin.Fingerprint
+	}
+	if current != replaces {
+		return ErrPinChanged
 	}
 	if want := s.st.ExpectFingerprint; want != "" && p.Fingerprint != want {
 		return ErrUnexpectedBundle

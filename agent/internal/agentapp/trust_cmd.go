@@ -166,6 +166,9 @@ a reset cannot make a spent approval usable again. Two things to know:
 
 			applyErr := pinOperatorTrustFile(s, trustFile, cfg)
 			if pin, err := s.Load(); err == nil && pin != nil {
+				if pin.Fingerprint != want {
+					return fmt.Errorf("another bundle (fingerprint %s) was pinned while this reset ran; run trust reset again", groupFingerprint(pin.Fingerprint))
+				}
 				fmt.Fprintf(out, "pinned the bundle in %s\n", trustFile)
 				return nil
 			}

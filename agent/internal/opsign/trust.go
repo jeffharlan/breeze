@@ -105,6 +105,7 @@ func ApplyBundle(s *Store, sb SignedBundle, id Identity, now time.Time) (applied
 
 	next := Pin{Fingerprint: fingerprint, PinnedAt: now.UTC()}
 	var authorising []BundleSig
+	replaces := ""
 	logMsg := "operator trust bundle pinned"
 	switch {
 	case pin == nil:
@@ -143,13 +144,14 @@ func ApplyBundle(s *Store, sb SignedBundle, id Identity, now time.Time) (applied
 			return false, rejected("%d valid signatures from its own admins, its own threshold is %d", len(own), b.Threshold)
 		}
 		next.DeviceID, next.OrgID, next.Hostname, next.PartnerID = pin.DeviceID, pin.OrgID, pin.Hostname, pin.PartnerID
+		replaces = pin.Fingerprint
 		logMsg = "operator trust bundle changed"
 	}
 
 	// Only the signatures that authorised the pin are kept, so a relayed bundle
 	// cannot make the agent store whatever else it carries.
 	next.Bundle = SignedBundle{CanonicalB64: sb.CanonicalB64, Signatures: authorising}
-	if err := s.SavePin(next); err != nil {
+	if err := s.SavePin(next, replaces); err != nil {
 		return false, err
 	}
 	log.Info(logMsg, "fingerprint", fingerprint, "epoch", b.Epoch, "mode", string(b.Mode), "partnerId", b.PartnerID)

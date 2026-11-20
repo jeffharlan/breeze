@@ -119,7 +119,7 @@ func TestLoadCorruptIsUnreadable(t *testing.T) {
 func TestPinRoundTrip(t *testing.T) {
 	path := statePath(t)
 	want := samplePin(t)
-	if err := OpenStore(path).SavePin(want); err != nil {
+	if err := OpenStore(path).SavePin(want, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err := restart(path).Load()
@@ -139,7 +139,7 @@ func TestSavePinRefusesPinItCouldNotReadBack(t *testing.T) {
 	path := statePath(t)
 	p := samplePin(t)
 	p.Fingerprint = strings.Repeat("0", 32)
-	if err := OpenStore(path).SavePin(p); err == nil {
+	if err := OpenStore(path).SavePin(p, ""); err == nil {
 		t.Fatal("SavePin accepted a pin whose fingerprint does not match its bundle")
 	}
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
@@ -306,7 +306,7 @@ func TestReplayConcurrentClaim(t *testing.T) {
 func TestClearPinKeepsClockAndReplayList(t *testing.T) {
 	path := statePath(t)
 	s := OpenStore(path)
-	if err := s.SavePin(samplePin(t)); err != nil {
+	if err := s.SavePin(samplePin(t), ""); err != nil {
 		t.Fatal(err)
 	}
 	s.Now(t0)
@@ -337,7 +337,7 @@ func TestSavePinConsumesExpectedFingerprint(t *testing.T) {
 	if err := s.ClearPin(pin.Fingerprint); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SavePin(pin); err != nil {
+	if err := s.SavePin(pin, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.ExpectFingerprint(); got != "" {
@@ -352,7 +352,7 @@ func TestSavePinRefusesBundleOtherThanExpected(t *testing.T) {
 	if err := s.ClearPin(other); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SavePin(samplePin(t)); !errors.Is(err, ErrUnexpectedBundle) {
+	if err := s.SavePin(samplePin(t), ""); !errors.Is(err, ErrUnexpectedBundle) {
 		t.Fatalf("SavePin = %v, want ErrUnexpectedBundle", err)
 	}
 	if pin, err := s.Load(); pin != nil || err != nil {
@@ -361,6 +361,78 @@ func TestSavePinRefusesBundleOtherThanExpected(t *testing.T) {
 	if got := s.ExpectFingerprint(); got != other {
 		t.Fatalf("a refused bundle consumed the expectation: %q", got)
 	}
+}
+
+// pinOf is a pin of sb on device A, built the way ApplyBundle builds one.
+func pinOf(t *testing.T, sb SignedBundle) Pin {
+	t.Helper()
+	return Pin{Bundle: sb, Fingerprint: fingerprintOf(t, sb), DeviceID: deviceA, OrgID: orgID, PartnerID: partnerID, Hostname: "srv-01", PinnedAt: t0}
+}
+
+// SavePin replaces only the pin its caller judged the new bundle against.
+// `trust reset` runs in another process, so the agent's in-process lock cannot
+// stop a heartbeat landing a bundle over the one the reset just pinned.
+func TestSavePinRefusesWhenThePinChanged(t *testing.T) {
+	ops := newOperators(t)
+	a := pinOf(t, signedBy(t, bundleOf(partnerID, 1, 1, ops.admin1), ops.admin1))
+	b := pinOf(t, signedBy(t, bundleOf(partnerID, 2, 1, ops.admin1), ops.admin1))
+	c := pinOf(t, signedBy(t, bundleOf(partnerID, 3, 1, ops.admin2), ops.admin2))
+	wantPinned := func(t *testing.T, path string, want Pin) {
+		t.Helper()
+		if got := fileState(t, path).Pin; got == nil || got.Fingerprint != want.Fingerprint {
+			t.Fatalf("pin on disk = %+v, want %s", got, want.Fingerprint)
+		}
+	}
+
+	t.Run("a first pin over a pin already there", func(t *testing.T) {
+		path := statePath(t)
+		s := OpenStore(path)
+		if err := s.SavePin(a, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SavePin(b, ""); !errors.Is(err, ErrPinChanged) {
+			t.Fatalf("SavePin = %v, want ErrPinChanged", err)
+		}
+		wantPinned(t, path, a)
+	})
+
+	t.Run("a change judged against a pin that is gone", func(t *testing.T) {
+		path := statePath(t)
+		s := OpenStore(path)
+		if err := s.SavePin(c, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SavePin(b, a.Fingerprint); !errors.Is(err, ErrPinChanged) {
+			t.Fatalf("SavePin = %v, want ErrPinChanged", err)
+		}
+		wantPinned(t, path, c)
+	})
+
+	t.Run("another process pins between Load and SavePin", func(t *testing.T) {
+		path := statePath(t)
+		s := OpenStore(path)
+		if err := s.SavePin(a, ""); err != nil {
+			t.Fatal(err)
+		}
+		judged := mustLoad(t, s)
+		writeState(t, path, state{Pin: &c, HighWater: t0, Approvals: map[string]time.Time{}})
+		if err := s.SavePin(b, judged.Fingerprint); !errors.Is(err, ErrPinChanged) {
+			t.Fatalf("SavePin = %v, want ErrPinChanged", err)
+		}
+		wantPinned(t, path, c)
+	})
+
+	t.Run("the pin the caller judged against is replaced", func(t *testing.T) {
+		path := statePath(t)
+		s := OpenStore(path)
+		if err := s.SavePin(a, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SavePin(b, a.Fingerprint); err != nil {
+			t.Fatal(err)
+		}
+		wantPinned(t, path, b)
+	})
 }
 
 func TestResetHighWater(t *testing.T) {
@@ -404,7 +476,7 @@ func TestUnreadableFileIsNeverOverwrittenByRoutineWrites(t *testing.T) {
 	if err := s.ResetHighWater(t0); !errors.Is(err, ErrPinUnreadable) {
 		t.Fatalf("ResetHighWater = %v, want ErrPinUnreadable", err)
 	}
-	if err := s.SavePin(samplePin(t)); !errors.Is(err, ErrPinUnreadable) {
+	if err := s.SavePin(samplePin(t), ""); !errors.Is(err, ErrPinUnreadable) {
 		t.Fatalf("SavePin = %v, want ErrPinUnreadable (only ClearPin repairs)", err)
 	}
 	if got := s.Now(t0); !got.Equal(t0) {
@@ -427,7 +499,7 @@ func TestUnreadableFileIsNeverOverwrittenByRoutineWrites(t *testing.T) {
 func TestChangeByAnotherProcessIsNotOverwritten(t *testing.T) {
 	path := statePath(t)
 	agent := OpenStore(path)
-	if err := agent.SavePin(samplePin(t)); err != nil {
+	if err := agent.SavePin(samplePin(t), ""); err != nil {
 		t.Fatal(err)
 	}
 	cli := &Store{path: path}
@@ -595,7 +667,7 @@ func TestFileMode0600(t *testing.T) {
 		t.Skip("POSIX permission bits")
 	}
 	path := statePath(t)
-	if err := OpenStore(path).SavePin(samplePin(t)); err != nil {
+	if err := OpenStore(path).SavePin(samplePin(t), ""); err != nil {
 		t.Fatal(err)
 	}
 	for p, want := range map[string]os.FileMode{path: 0o600, filepath.Dir(path): 0o700} {
