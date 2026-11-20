@@ -167,7 +167,9 @@ needs an operator approval (Tier A, kind `identity`).
   admin signs.
 - **Fail closed:** a pin that exists but is unreadable or corrupt → refuse Tier A and report.
 - **Recovery:** local administrator runs `breeze-agent trust reset --expect <fingerprint>`; the
-  agent re-pins only a bundle matching that fingerprint.
+  agent re-pins only a bundle matching that fingerprint. Until it lands, Tier A and every update
+  are refused in every mode (`trust show`: `mode: pending`), so a server that never sends the
+  bundle cannot keep the device ungated after a reset.
 
 ### 3. Approval envelopes
 
@@ -280,7 +282,8 @@ before the handler, and by the updater/watchdog and the heartbeat-field appliers
 fields (rebind/identity, time sync, containment state). Steps:
 
 1. Tier lookup. Not Tier A → allow.
-2. No pin → allow (mode `off`). Pin unreadable → refuse.
+2. No pin → allow (mode `off`). Pin unreadable, or a `trust reset` still waiting for its bundle →
+   refuse.
 3. Find the `operatorApproval` field (action envelope, or rule envelope attached at delivery).
 4. Verify signature against a pinned key of a role allowed for this kind; check partner, own
    deviceId + hostname, command type, payload hash recomputed from **this** payload, expiry against

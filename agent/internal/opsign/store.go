@@ -409,8 +409,9 @@ func (s *Store) HighWater() time.Time {
 }
 
 // raise lifts high-water time to t and writes it out once it is
-// highWaterFlushEvery ahead of the file, if the file lock is free. A skipped or failed write is retried by
-// the next call, and ClaimApproval reports its own write errors.
+// highWaterFlushEvery ahead of the file, if the file lock is free. A skipped or
+// failed write is retried by the next call, and ClaimApproval reports its own
+// write errors.
 func (s *Store) raise(t time.Time) {
 	if t.After(s.st.HighWater) {
 		s.st.HighWater = t.UTC()
