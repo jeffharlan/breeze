@@ -255,8 +255,8 @@ func TestTrustResetNormalizesExpect(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if got := store.ExpectFingerprint(); got != fp {
-					t.Fatalf("stored expectation = %q, want the normalized %q", got, fp)
+				if _, got, err := store.LoadTrust(); err != nil || got != fp {
+					t.Fatalf("stored expectation = %q (%v), want the normalized %q", got, err, fp)
 				}
 				return
 			}
@@ -289,8 +289,8 @@ func TestTrustResetPinsMatchingFile(t *testing.T) {
 	if pin.Fingerprint != fp {
 		t.Fatalf("pinned %s, want the file's bundle %s", pin.Fingerprint, fp)
 	}
-	if got := store.ExpectFingerprint(); got != "" {
-		t.Fatalf("the expectation survived the pin: %q", got)
+	if _, got, err := store.LoadTrust(); err != nil || got != "" {
+		t.Fatalf("the expectation survived the pin: %q, %v", got, err)
 	}
 	if !strings.Contains(out, "pinned the bundle in "+filePath) {
 		t.Fatalf("output = %q", out)
@@ -312,8 +312,8 @@ func TestTrustResetIgnoresMismatchedFile(t *testing.T) {
 	if err != nil || pin != nil {
 		t.Fatalf("pin=%v err=%v, want the pin cleared and nothing pinned", pin, err)
 	}
-	if got := store.ExpectFingerprint(); got != expected {
-		t.Fatalf("expectation = %q, want %q", got, expected)
+	if _, got, err := store.LoadTrust(); err != nil || got != expected {
+		t.Fatalf("expectation = %q (%v), want %q", got, err, expected)
 	}
 	if !strings.Contains(out, "operator-trust.json was not used") || !strings.Contains(out, "heartbeat") {
 		t.Fatalf("output = %q", out)

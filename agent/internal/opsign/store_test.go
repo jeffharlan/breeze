@@ -386,8 +386,8 @@ func TestClearPinKeepsClockAndReplayList(t *testing.T) {
 	if pin, err := s.Load(); pin != nil || err != nil {
 		t.Fatalf("Load after clear = %v, %v", pin, err)
 	}
-	if got := s.ExpectFingerprint(); got != "0123456789abcdef0123456789abcdef" {
-		t.Fatalf("ExpectFingerprint = %q", got)
+	if _, got, err := s.LoadTrust(); err != nil || got != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("awaiting fingerprint = %q, %v", got, err)
 	}
 	if got := s.Now(t0.Add(-time.Hour)); !got.Equal(t0) {
 		t.Fatalf("clearing the pin moved the clock back to %v", got)
@@ -406,8 +406,8 @@ func TestSavePinConsumesExpectedFingerprint(t *testing.T) {
 	if err := s.SavePin(pin, ""); err != nil {
 		t.Fatal(err)
 	}
-	if got := s.ExpectFingerprint(); got != "" {
-		t.Fatalf("ExpectFingerprint after the pin landed = %q, want empty", got)
+	if _, got, err := s.LoadTrust(); err != nil || got != "" {
+		t.Fatalf("awaiting fingerprint after the pin landed = %q, %v, want empty", got, err)
 	}
 }
 
@@ -424,8 +424,8 @@ func TestSavePinRefusesBundleOtherThanExpected(t *testing.T) {
 	if pin, err := s.Load(); pin != nil || err != nil {
 		t.Fatalf("a refused bundle was pinned: %v, %v", pin, err)
 	}
-	if got := s.ExpectFingerprint(); got != other {
-		t.Fatalf("a refused bundle consumed the expectation: %q", got)
+	if _, got, err := s.LoadTrust(); err != nil || got != other {
+		t.Fatalf("a refused bundle consumed the expectation: %q, %v", got, err)
 	}
 }
 

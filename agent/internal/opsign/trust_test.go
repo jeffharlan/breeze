@@ -248,8 +248,8 @@ func TestFirstPinHonoursExpectFingerprint(t *testing.T) {
 	if applied, err := ApplyBundle(s, sb, deviceIdentity, t0); err != nil || !applied {
 		t.Fatalf("expected bundle: applied=%v err=%v", applied, err)
 	}
-	if got := s.ExpectFingerprint(); got != "" {
-		t.Errorf("ExpectFingerprint = %q after the pin, want it consumed", got)
+	if _, got, err := s.LoadTrust(); err != nil || got != "" {
+		t.Errorf("awaiting fingerprint = %q after the pin (%v), want it consumed", got, err)
 	}
 }
 
