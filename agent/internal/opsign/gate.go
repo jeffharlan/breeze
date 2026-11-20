@@ -109,7 +109,9 @@ const agentUpdateType = "agent_update"
 
 // CheckUpdate applies spec section 4. Nothing installs below the pinned
 // bundle's minAgentVersion, whoever signed it. An update signed only by a
-// deployment key also needs an unused agent_update approval for this device.
+// deployment key also needs an agent_update approval of its manifest for this
+// device. That approval is not spent: one release takes several downloads, and
+// a failed download must be retryable without asking the operator again.
 func (g *Gate) CheckUpdate(u UpdateCheck) Decision {
 	return g.decide(func(pin *Pin, bundle Bundle) (wire.CommandErrorCode, string) {
 		if code, reason := belowFloor(bundle, u.Version); code != "" {
@@ -125,7 +127,7 @@ func (g *Gate) CheckUpdate(u UpdateCheck) Decision {
 		if !ok {
 			return wire.ErrCodeOpsignIdentityChanged, identityChangedReason
 		}
-		return g.verifyApproval(pin, bundle, id, *u.Approval, agentUpdateType, func() (string, error) { return AgentUpdatePayloadHash(u.Manifest), nil }, u.Clock)
+		return g.verifyApproval(pin, bundle, id, *u.Approval, agentUpdateType, func() (string, error) { return AgentUpdatePayloadHash(u.Manifest), nil }, u.Clock, false)
 	})
 }
 
@@ -173,13 +175,14 @@ func (g *Gate) verify(pin *Pin, bundle Bundle, commandType string, payload map[s
 	if err != nil {
 		c = Carrier{} // verifyApproval refuses a zero carrier as malformed
 	}
-	return g.verifyApproval(pin, bundle, id, c, commandType, func() (string, error) { return PayloadHash(commandType, payload) }, clock)
+	return g.verifyApproval(pin, bundle, id, c, commandType, func() (string, error) { return PayloadHash(commandType, payload) }, clock, true)
 }
 
-// verifyApproval checks c as an approval of commandType for this device and
-// marks it used. approvedHash returns the hash the approval's entry for this
-// device must carry; it runs only once the approval names this device.
-func (g *Gate) verifyApproval(pin *Pin, bundle Bundle, id Identity, c Carrier, commandType string, approvedHash func() (string, error), clock time.Time) (wire.CommandErrorCode, string) {
+// verifyApproval checks c as an approval of commandType for this device, and
+// marks it used when singleUse. approvedHash returns the hash the approval's
+// entry for this device must carry; it runs only once the approval names this
+// device.
+func (g *Gate) verifyApproval(pin *Pin, bundle Bundle, id Identity, c Carrier, commandType string, approvedHash func() (string, error), clock time.Time, singleUse bool) (wire.CommandErrorCode, string) {
 	if c.V != 1 {
 		return wire.ErrCodeOpsignMalformed, "the operator approval is not a version 1 approval"
 	}
@@ -225,7 +228,12 @@ func (g *Gate) verifyApproval(pin *Pin, bundle Bundle, id Identity, c Carrier, c
 		return wire.ErrCodeOpsignExpired, "the approval has expired"
 	}
 
-	switch err := g.Store.ClaimApproval(approval.ApprovalID, approval.ExpiresAt); {
+	if singleUse {
+		err = g.Store.ClaimApproval(approval.ApprovalID, approval.ExpiresAt)
+	} else {
+		err = g.Store.CheckReusable(approval.ExpiresAt)
+	}
+	switch {
 	case err == nil:
 		return "", ""
 	case errors.Is(err, ErrReplayed):

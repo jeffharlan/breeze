@@ -24,6 +24,14 @@ func TestNoStaleTierEntries(t *testing.T) {
 	}
 }
 
+// agent_update approvals hash manifest text and may be used more than once, so
+// a command of that name must never exist for one to authorise.
+func TestNoCommandIsNamedAgentUpdate(t *testing.T) {
+	if _, ok := handlerRegistry["agent_update"]; ok {
+		t.Fatal("a command named agent_update would accept operator approvals meant for updates")
+	}
+}
+
 func TestUnknownTypeIsTierA(t *testing.T) {
 	if got := opsign.TierOf("brand_new_command"); got != opsign.TierA {
 		t.Errorf("TierOf(unknown) = %v, want TierA", got)

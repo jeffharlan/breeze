@@ -233,7 +233,8 @@ clock and from verified `issuedAt` values). Expiry and replay pruning use the hi
 the raw clock, so rolling the clock back cannot revive anything. Server-supplied NTP settings and the
 time commands are Tier A.
 
-**Replay.** Action `approvalId`s are stored on disk until high-water time passes their expiry.
+**Replay.** Action `approvalId`s are stored on disk until high-water time passes their expiry
+(`agent_update` approvals are the exception; see §4).
 Hostname in each entry is checked against the agent's own local hostname, so an approval for one
 device does not run on a device the server renamed or rebound to that ID.
 
@@ -243,7 +244,12 @@ Enforced inside `agent/internal/updater` so every caller (heartbeat upgrade offe
 helper/watchdog upgrades, the watchdog's own channel) inherits it. Under `enforce`:
 
 - A manifest signed only by a deployment key needs an action approval of kind `agent_update` over
-  the manifest text (§3, exception).
+  the manifest text (§3, exception). It is not single-use: it is already tied to exact bytes, this
+  device and at most 24 hours, and one release needs several downloads and retries. Accepted
+  limit: until it expires the server can apply it again, including to move a device back to that
+  release after a newer one was installed (the watchdog's update has no downgrade check); raising
+  `minAgentVersion` stops that at once. An approval expiring at or before the replay prune floor is
+  still refused.
 - Nothing installs below the bundle's `minAgentVersion`, whoever signed it (closes downgrade to a
   gate-less release, including via `agent_rollback_v1` and the watchdog).
 - The watchdog reads the same pinned state and applies the same check.

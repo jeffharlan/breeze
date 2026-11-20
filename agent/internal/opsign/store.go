@@ -460,6 +460,23 @@ func (s *Store) ClaimApproval(approvalID string, expiresAt time.Time) error {
 	})
 }
 
+// CheckReusable is ClaimApproval for an approval that may be used more than
+// once (agent_update, spec section 4): it records nothing, but still refuses
+// with ErrReplayed one that expires at or before PruneFloor, which a trust
+// reset winding high-water time back would otherwise let through.
+func (s *Store) CheckReusable(expiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refresh()
+	if s.loadErr != nil {
+		return s.loadErr
+	}
+	if !expiresAt.After(s.st.PruneFloor) {
+		return ErrReplayed
+	}
+	return nil
+}
+
 // ResetHighWater sets high-water time to clock even if that is earlier. It is
 // the one way back, for a local administrator recovering from a clock that ran
 // far ahead (`trust reset`). It leaves PruneFloor alone, so approvals already

@@ -122,9 +122,11 @@ func TestCheckUpdateDeploymentKeyNeedsApproval(t *testing.T) {
 			c := f.sign(a, f.ops.approver)
 			return &c
 		}},
-		{"already used", wire.ErrCodeOpsignReplayed, func(f *gateFixture) *Carrier {
-			c := f.sign(f.updateApproval(manifestA), f.ops.approver)
-			wantAllowed(f.t, f.checkUpdate("0.70.0", false, &c))
+		{"expiring at or before the prune floor", wire.ErrCodeOpsignReplayed, func(f *gateFixture) *Carrier {
+			st := fileState(f.t, f.path)
+			st.PruneFloor = t0.Add(time.Hour)
+			writeState(f.t, f.path, st)
+			c := f.sign(f.updateApproval(manifestA), f.ops.approver) // expires t0+1h
 			return &c
 		}},
 		{"identity differs from the pin", wire.ErrCodeOpsignIdentityChanged, func(f *gateFixture) *Carrier {
@@ -148,8 +150,27 @@ func TestCheckUpdateDeploymentKeyNeedsApproval(t *testing.T) {
 		if d.Mode != ModeEnforce {
 			t.Errorf("mode = %q", d.Mode)
 		}
-		wantRefused(t, f.checkUpdate("0.70.0", false, &c), wire.ErrCodeOpsignReplayed)
 	})
+}
+
+// One release takes several downloads, and a failed download must be retryable,
+// so an update approval is not spent. Every other check still applies to each use.
+func TestCheckUpdateApprovalCanBeUsedAgain(t *testing.T) {
+	f := newGateFixtureWithFloor(t, ModeEnforce, "v0.70.0")
+	a := f.updateApproval(manifestA)
+	c := f.sign(a, f.ops.approver)
+	wantAllowed(t, f.checkUpdate("0.70.0", false, &c))
+	wantAllowed(t, f.checkUpdate("0.70.0", false, &c))
+	if used := fileState(t, f.path).Approvals; len(used) != 0 {
+		t.Errorf("an update approval was recorded as used: %v", used)
+	}
+
+	wantRefused(t, f.checkUpdate("0.69.9", false, &c), wire.ErrCodeOpsignBelowFloor)
+	f.identity.Hostname = "renamed-pc"
+	wantRefused(t, f.checkUpdate("0.70.0", false, &c), wire.ErrCodeOpsignWrongTarget)
+	f.identity.Hostname = gateHost
+	f.store.Now(a.ExpiresAt)
+	wantRefused(t, f.checkUpdate("0.70.0", false, &c), wire.ErrCodeOpsignExpired)
 }
 
 func TestCheckUpdateVendorSignedNeedsNoApproval(t *testing.T) {

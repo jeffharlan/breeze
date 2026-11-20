@@ -248,12 +248,11 @@ func TestDeploymentSignedUpdateNeedsOperatorApproval(t *testing.T) {
 		f.wantUntouched(t)
 	})
 
-	t.Run("accepted with an approval of this manifest, once", func(t *testing.T) {
+	t.Run("accepted with an approval of this manifest, and again on a retry", func(t *testing.T) {
 		op := pinOperatorTrust(t, opsign.ModeEnforce, "v1.0.0")
 		f := newUpdateFixture(t, offer(op.approve(t, signed.Manifest)), content, cfg)
 		wantDownloaded(t, f.u, "1.2.3")
-		_, err := f.u.DownloadBinary("1.2.3")
-		wantRefusal(t, err, "opsign_replayed")
+		wantDownloaded(t, f.u, "1.2.3")
 	})
 
 	t.Run("refused when the approval is for another manifest", func(t *testing.T) {
