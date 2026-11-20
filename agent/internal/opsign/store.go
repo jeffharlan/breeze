@@ -391,6 +391,14 @@ func (s *Store) ClearPin(expectFingerprint string) error {
 	return s.update(func(st *state) { st.Pin, st.ExpectFingerprint = nil, expectFingerprint })
 }
 
+// ExpectFingerprint is the fingerprint set by ClearPin, or "".
+func (s *Store) ExpectFingerprint() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refresh()
+	return s.st.ExpectFingerprint
+}
+
 // HighWater is the trusted-time floor on disk, for `trust show`. Unlike Now it
 // never writes.
 func (s *Store) HighWater() time.Time {
