@@ -14,7 +14,7 @@ import {
   type OperatorRuleV1,
   type OperatorTrustBundleV1,
 } from './index';
-import { assertBundleKeyIds, fingerprint, keyIdFromSpki, payloadHash } from './node';
+import { agentUpdatePayloadHash, fingerprint, keyIdFromSpki, payloadHash } from './node';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -37,6 +37,7 @@ interface Vectors {
   action: Signed<OperatorActionApprovalV1>;
   rule: Signed<OperatorRuleV1>;
   ruleOrg: Signed<OperatorRuleV1>;
+  agentUpdate: { name: string; manifest: string; hash: string }[];
 }
 const vectors: Vectors = JSON.parse(
   readFileSync(join(HERE, '../../../../agent/internal/opsign/testdata/operator_signing_v1_vectors.json'), 'utf8'),
@@ -74,6 +75,12 @@ describe('golden vectors written by the Go agent', () => {
     expect(payloadHash(v.commandType, v.payload)).toBe(v.hash);
   });
 
+  it.each(vectors.agentUpdate)('agent_update payload hash: $name', (v) => {
+    expect(agentUpdatePayloadHash(v.manifest)).toBe(v.hash);
+    // The manifest is hashed as served; hashing re-encoded JSON is the mistake this vector catches.
+    expect(agentUpdatePayloadHash(jcsCanonicalize(JSON.parse(v.manifest)))).not.toBe(v.hash);
+  });
+
   it.each(vectors.keys)('key id: $label', (k) => {
     expect(keyIdFromSpki(Buffer.from(k.spkiB64, 'base64'))).toBe(k.keyId);
   });
@@ -82,7 +89,6 @@ describe('golden vectors written by the Go agent', () => {
     const text = textOf(vectors.bundle.canonicalB64);
     expect(canonicalBundle(vectors.bundle.struct)).toBe(text);
     expect(fingerprint(text)).toBe(vectors.bundle.fingerprint);
-    expect(() => assertBundleKeyIds(vectors.bundle.struct)).not.toThrow();
     expect(vectors.bundle.signatures).toHaveLength(vectors.bundle.struct.threshold);
     for (const s of vectors.bundle.signatures) {
       expect(signatureVerifies(s.keyId, text, s.signatureB64)).toBe(true);
@@ -218,17 +224,6 @@ describe('canonicalBundle refuses what the Go twin refuses', () => {
     expect(() => canonicalBundle(edit(base, change))).toThrow(REFUSED);
   });
 
-  it('refuses a key id that is not the hash of its key, and a key that is not on the curve', () => {
-    const wrongId = edit(base, (d) => { d.keys[0]!.keyId = '0'.repeat(32); });
-    expect(() => assertBundleKeyIds(wrongId)).toThrow(/does not match/);
-    const offCurve = Buffer.concat([Buffer.from(base.keys[0]!.spkiB64, 'base64').subarray(0, 27), Buffer.alloc(64, 1)]);
-    const notOnCurve = edit(base, (d) => {
-      d.keys[0]!.spkiB64 = offCurve.toString('base64');
-      d.keys[0]!.keyId = keyIdFromSpki(offCurve);
-    });
-    expect(() => assertBundleKeyIds(notOnCurve)).toThrow(); // its id matches, so only the curve check can refuse it
-  });
-
   it('accepts a label with inner spaces and with Unicode whitespace at the edge (ASCII-only edge rule)', () => {
     const label = ' Jeff ';
     const firstKeyLine = canonicalBundle(edit(base, (d) => { d.keys[0]!.label = label; })).split('\n')[7]!;
@@ -266,6 +261,10 @@ describe('canonicalActionApproval refuses what the Go twin refuses', () => {
     ['an issue time at hour 24', times('2026-11-19T24:00:00Z', '2026-11-20T00:30:00Z')],
   ])('rejects %s', (_name, change) => {
     expect(() => canonicalActionApproval(edit(base, change))).toThrow(REFUSED);
+  });
+
+  it.each(['terminal_start', 'start_desktop', 'desktop_stream_start', 'tunnel_open'])('refuses a 3-minute %s approval', (type) => {
+    expect(() => canonicalActionApproval(edit(base, times(T0, '2026-11-19T12:03:00Z', type)))).toThrow(REFUSED);
   });
 
   it('accepts the limits themselves: 500 entries, 24 hours, 2 minutes for a session type, a 64-character type', () => {

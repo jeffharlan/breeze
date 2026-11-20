@@ -2,11 +2,14 @@
  * TypeScript twin of the Go agent's agent/internal/opsign formats (jcs.go,
  * payloadhash.go, format.go). The phone builds the exact text an operator signs
  * and the agent verifies, so every builder produces the same bytes as Go's
- * CanonicalBytes and throws where Go returns an error. interop.test.ts proves
- * both against the shared vectors the Go tests write.
+ * CanonicalBytes and throws where Go returns an error, with one gap: Go also
+ * checks that each bundle key id is the hash of its key and that the key is a
+ * real P-256 point, and these builders check neither (that needs SHA-256 and a
+ * curve library). interop.test.ts proves the rest against the shared vectors
+ * the Go tests write.
  *
  * Pure on purpose: no Node imports, so React Native can use it. Hashing
- * (payloadHash, keyIdFromSpki, fingerprint) lives in ./node.
+ * (payloadHash, agentUpdatePayloadHash, keyIdFromSpki, fingerprint) lives in ./node.
  */
 
 export type OperatorRole = 'admin' | 'approver';
@@ -162,7 +165,7 @@ const TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 // The only P-256 SPKI encoding: a fixed 26-byte header, 0x04, then X and Y, in
 // canonical padded base64 (the last character before == carries no stray bits).
 // That a key id is the hash of its key, and that the point is on the curve,
-// need SHA-256 and a curve library: see assertBundleKeyIds in ./node.
+// are not checked here (see the header).
 const P256_SPKI_B64 = /^MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE[A-Za-z0-9+/]{85}[AQgw]==$/;
 
 const invalid = (field: string, v: unknown) => new Error(`opsign: invalid ${field} ${JSON.stringify(v)}`);
