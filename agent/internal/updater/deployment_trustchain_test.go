@@ -246,8 +246,12 @@ func TestDeploymentSignedManifestFixture_AllEntriesVerify(t *testing.T) {
 			if err != nil {
 				t.Fatalf("decode signature for %s: %v", name, err)
 			}
-			if err := u.verifyManifestSignature([]byte(entry.Manifest), sig, fx.KeyID); err != nil {
+			matched, err := u.verifyManifestSignature([]byte(entry.Manifest), sig, fx.KeyID)
+			if err != nil {
 				t.Fatalf("signature did not verify for %s: %v", name, err)
+			}
+			if matched != fx.KeyID {
+				t.Fatalf("matched key id for %s = %q, want %q", name, matched, fx.KeyID)
 			}
 		})
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/hostpolicy"
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/netpolicy"
+	"github.com/breeze-rmm/agent/internal/opsign"
 	"github.com/breeze-rmm/agent/internal/procspawn"
 	"github.com/breeze-rmm/agent/internal/secmem"
 	"github.com/breeze-rmm/agent/pkg/httpguard"
@@ -856,53 +857,57 @@ func (u *Updater) requireSigningKeyID() bool {
 // When signingKeyID is absent, RequireManifestSigningKeyID decides: true fails
 // closed, false verifies against the whole key set and emits one bounded
 // warning per process.
-func (u *Updater) verifyManifestSignature(payload, signature []byte, signingKeyID string) error {
+//
+// matchedKeyID is the ID of the key that verified, empty when an ID-less legacy
+// key did. The operator-trust gate reads it to tell vendor-signed manifests
+// from deployment-signed ones.
+func (u *Updater) verifyManifestSignature(payload, signature []byte, signingKeyID string) (matchedKeyID string, err error) {
 	keyed, unkeyed, err := u.manifestTrustKeys()
 	if err != nil {
-		return asTrustError(ErrManifestKey, err)
+		return "", asTrustError(ErrManifestKey, err)
 	}
 
 	if id := strings.TrimSpace(signingKeyID); id != "" {
 		// Never echo an unvalidated ID: it is control-plane supplied and
 		// reaches log lines through the caller's error reporting.
 		if !config.ValidManifestKeyID(id) {
-			return trustErrorf(ErrManifestKey, "update manifest signing key id is malformed")
+			return "", trustErrorf(ErrManifestKey, "update manifest signing key id is malformed")
 		}
 		key, ok := keyed[id]
 		if !ok {
-			return trustErrorf(ErrManifestKey, "unknown update manifest signing key id %q", id)
+			return "", trustErrorf(ErrManifestKey, "unknown update manifest signing key id %q", id)
 		}
 		if !ed25519.Verify(key, payload, signature) {
-			return trustErrorf(ErrManifestSignature, "update manifest signature verification failed for signing key id %q", id)
+			return "", trustErrorf(ErrManifestSignature, "update manifest signature verification failed for signing key id %q", id)
 		}
-		return nil
+		return id, nil
 	}
 
 	if u.requireSigningKeyID() {
-		return trustErrorf(ErrManifestKey, "manifest signing key ID required")
+		return "", trustErrorf(ErrManifestKey, "manifest signing key ID required")
 	}
 
 	if len(keyed) == 0 && len(unkeyed) == 0 {
-		return trustErrorf(ErrManifestKey, "no trusted update manifest public keys configured")
+		return "", trustErrorf(ErrManifestKey, "no trusted update manifest public keys configured")
 	}
 
-	for _, key := range keyed {
+	for id, key := range keyed {
 		if ed25519.Verify(key, payload, signature) {
 			// Warn only on ACCEPTANCE: the warning means "this agent took an
 			// update whose manifest named no key". A response that fails
 			// verification anyway must not consume the one-per-process budget
 			// and hide a later, genuinely accepted ID-less manifest.
 			warnMissingSigningKeyIDOnce()
-			return nil
+			return id, nil
 		}
 	}
 	for _, key := range unkeyed {
 		if ed25519.Verify(key, payload, signature) {
 			warnMissingSigningKeyIDOnce()
-			return nil
+			return "", nil
 		}
 	}
-	return ErrManifestSignature
+	return "", ErrManifestSignature
 }
 
 func normalizePreflightErr(err error) error {
@@ -1045,6 +1050,12 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) (retErr error) {
 	var marker updateMarkerTxn
 	defer func() { marker.abandonOnError(retErr) }()
 	if err := checkIsolationCompanions(opts); err != nil {
+		return err
+	}
+	// A version below the trust bundle's floor is refused before anything is
+	// downloaded or touched. checkOperatorTrust checks the signed manifest's
+	// version again.
+	if err := operatorTrustError(operatorGate().CheckFloor(version), u.component(), version); err != nil {
 		return err
 	}
 	log.Info("starting update", "targetVersion", version)
@@ -1229,6 +1240,10 @@ type downloadInfo struct {
 	Manifest          string `json:"manifest"`
 	ManifestSignature string `json:"manifestSignature"`
 	SigningKeyID      string `json:"signingKeyId"`
+	// OperatorApproval is the operator's approval of this artifact, which a
+	// manifest signed only by a deployment key needs under an enforce-mode
+	// trust bundle (#12257).
+	OperatorApproval *opsign.Carrier `json:"operatorApproval,omitempty"`
 }
 
 func (u *Updater) requestWithoutRedirect(req *http.Request) (*http.Response, error) {
@@ -1298,7 +1313,8 @@ func (u *Updater) verifyUpdateManifest(info downloadInfo, version string) (updat
 	}
 
 	payload := []byte(info.Manifest)
-	if err := u.verifyManifestSignature(payload, signature, info.SigningKeyID); err != nil {
+	keyID, err := u.verifyManifestSignature(payload, signature, info.SigningKeyID)
+	if err != nil {
 		return updateManifest{}, err
 	}
 
@@ -1307,7 +1323,11 @@ func (u *Updater) verifyUpdateManifest(info downloadInfo, version string) (updat
 		return updateManifest{}, fmt.Errorf("invalid update manifest JSON: %w", err)
 	}
 	if manifest.Version == "" && manifest.Checksum == "" {
-		return u.verifyReleaseArtifactManifest(payload, info, version)
+		asset, err := u.verifyReleaseArtifactManifest(payload, info, version)
+		if err != nil {
+			return updateManifest{}, err
+		}
+		return checkOperatorTrust(asset, keyID, info)
 	}
 
 	if manifest.Version != version {
@@ -1341,6 +1361,38 @@ func (u *Updater) verifyUpdateManifest(info downloadInfo, version string) (updat
 		return updateManifest{}, fmt.Errorf("update manifest size %d exceeds allowed bounds", manifest.Size)
 	}
 
+	return checkOperatorTrust(manifest, keyID, info)
+}
+
+// operatorGate is the pinned operator trust bundle every install is judged
+// against; it is a variable so tests can give it a known identity.
+var operatorGate = opsign.DefaultGate
+
+// operatorTrustError logs what the gate found and returns the error that stops
+// the install, or nil when it may go ahead (audit mode reports and allows).
+func operatorTrustError(d opsign.Decision, component, version string) error {
+	if d.Code != "" {
+		log.Warn("operator trust check refused an update", "artifact", component, "version", version, "mode", string(d.Mode), "code", string(d.Code), "allowed", d.Allow, "reason", d.Reason)
+	}
+	if d.Allow {
+		return nil
+	}
+	return fmt.Errorf("%s: %s", d.Code, d.Reason)
+}
+
+// checkOperatorTrust is the last step of verifying a manifest, after the
+// signature and every field check: the version floor, and for a manifest signed
+// only by a deployment key, the operator's approval of this artifact (#12257).
+// Every install path verifies its manifest here, so every caller inherits it.
+func checkOperatorTrust(manifest updateManifest, keyID string, info downloadInfo) (updateManifest, error) {
+	_, vendorSigned := embeddedManifestPublicKeys[keyID]
+	d := operatorGate().CheckUpdate(opsign.UpdateCheck{
+		Version: manifest.Version, ArtifactSHA256: manifest.Checksum,
+		VendorSigned: vendorSigned, Approval: info.OperatorApproval, Clock: time.Now(),
+	})
+	if err := operatorTrustError(d, manifest.Component, manifest.Version); err != nil {
+		return updateManifest{}, err
+	}
 	return manifest, nil
 }
 
@@ -1536,7 +1588,8 @@ func (u *Updater) StageRollbackArtifacts(request RollbackStageRequest) (StagedRo
 // VerifySignedPayload verifies an arbitrary domain-separated payload against
 // the same exact keyed manifest trust set used for release artifacts.
 func (u *Updater) VerifySignedPayload(keyID string, payload, signature []byte) error {
-	return u.verifyManifestSignature(payload, signature, keyID)
+	_, err := u.verifyManifestSignature(payload, signature, keyID)
+	return err
 }
 
 // downloadBinary fetches download info from the API and then downloads the binary.

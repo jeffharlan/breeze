@@ -23,7 +23,7 @@ func (u *Updater) VerifiedReleaseAssetSHA256(manifest, signatureB64, signingKeyI
 		return "", trustErrorf(ErrManifestSignature, "invalid release manifest signature encoding")
 	}
 	payload := []byte(manifest)
-	if err := u.verifyManifestSignature(payload, signature, signingKeyID); err != nil {
+	if _, err := u.verifyManifestSignature(payload, signature, signingKeyID); err != nil {
 		return "", err
 	}
 	return releaseAssetChecksum(payload, version, assetName)

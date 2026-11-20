@@ -35,11 +35,18 @@ type gateFixture struct {
 // device A, whose hostname is gateHost.
 func newGateFixture(t *testing.T, mode Mode) *gateFixture {
 	t.Helper()
+	return newGateFixtureWithFloor(t, mode, "")
+}
+
+// newGateFixtureWithFloor is newGateFixture with the bundle's minAgentVersion set.
+func newGateFixtureWithFloor(t *testing.T, mode Mode, floor string) *gateFixture {
+	t.Helper()
 	ops := newOperators(t)
 	path := statePath(t)
 	store := OpenStore(path)
 	b := bundleOf(partnerID, 1, 1, ops.admin1, ops.approver)
 	b.Mode = mode
+	b.MinAgentVersion = floor
 	id := Identity{DeviceID: deviceA, OrgID: orgID, Hostname: gateHost}
 	if applied, err := ApplyBundle(store, signedBy(t, b, ops.admin1), id, t0); err != nil || !applied {
 		t.Fatalf("pin: applied=%v err=%v", applied, err)
