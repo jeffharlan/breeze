@@ -400,6 +400,12 @@ func NewErrorResult(err error, durationMs int64) CommandResult {
 	}
 }
 
+// NewCodedErrorResult is NewErrorResult for a caller outside this package that
+// refuses a command with a typed code (the operator-approval gate).
+func NewCodedErrorResult(code wire.CommandErrorCode, msg string, durationMs int64) CommandResult {
+	return NewErrorResult(withErrorCode(code, errors.New(msg)), durationMs)
+}
+
 // codedError attaches a wire.CommandErrorCode to an error without changing its
 // message — the prose is what pre-#4026 servers still classify on, so it must
 // stay byte-identical.

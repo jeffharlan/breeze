@@ -6,12 +6,15 @@ import { AGENT_COMMAND_ERROR_CODES, type AgentCommandErrorCode } from '../agents
 describe('classifyCommandFailure — typed agent errorCode (#4026)', () => {
   // Network-isolation codes (#10088) ride only isolate/release results, which
   // never reach this classifier, and no pre-#4026 agent sent their prose, so
-  // there is no legacy answer to stay in parity with. They are pinned below.
-  type IsolationCode = Extract<AgentCommandErrorCode, `isolation_${string}`>;
-  type FileOpCode = Exclude<AgentCommandErrorCode, IsolationCode>;
-  const isIsolationCode = (code: AgentCommandErrorCode): code is IsolationCode => code.startsWith('isolation_');
-  const FILE_OP_CODES = AGENT_COMMAND_ERROR_CODES.filter((code): code is FileOpCode => !isIsolationCode(code));
-  const ISOLATION_CODES = AGENT_COMMAND_ERROR_CODES.filter(isIsolationCode);
+  // there is no legacy answer to stay in parity with. The operator-approval
+  // codes (#12257) are the same: new refusals with no older spelling. They are
+  // pinned below.
+  type RefusalOnlyCode = Extract<AgentCommandErrorCode, `isolation_${string}` | `opsign_${string}`>;
+  type FileOpCode = Exclude<AgentCommandErrorCode, RefusalOnlyCode>;
+  const isRefusalOnlyCode = (code: AgentCommandErrorCode): code is RefusalOnlyCode =>
+    code.startsWith('isolation_') || code.startsWith('opsign_');
+  const FILE_OP_CODES = AGENT_COMMAND_ERROR_CODES.filter((code): code is FileOpCode => !isRefusalOnlyCode(code));
+  const REFUSAL_ONLY_CODES = AGENT_COMMAND_ERROR_CODES.filter(isRefusalOnlyCode);
 
   // One representative prose per file-op code, as today's agents spell it.
   // Typed as a full Record so adding a code to AGENT_COMMAND_ERROR_CODES
@@ -103,9 +106,10 @@ describe('classifyCommandFailure — typed agent errorCode (#4026)', () => {
     expect(unrecognisedProse.status).toBe(500);
   });
 
-  it('classifies every isolation code as a deterministic refusal (422)', () => {
-    expect(ISOLATION_CODES.length).toBeGreaterThan(0);
-    for (const code of ISOLATION_CODES) {
+  it('classifies every isolation and operator-approval code as a deterministic refusal (422)', () => {
+    expect(REFUSAL_ONLY_CODES.length).toBeGreaterThan(0);
+    expect(REFUSAL_ONLY_CODES.some((code) => code.startsWith('opsign_'))).toBe(true);
+    for (const code of REFUSAL_ONLY_CODES) {
       const failure = classifyCommandFailure({ status: 'failed', error: 'refused', errorCode: code });
       expect(failure.kind, code).toBe(ERROR_CODES.AGENT_COMMAND_REJECTED);
       expect(failure.status, code).toBe(422);

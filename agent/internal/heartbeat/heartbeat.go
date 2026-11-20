@@ -489,9 +489,12 @@ func (h *Heartbeat) lifecycleMode() string {
 
 type Heartbeat struct {
 	// opsignStore is the operator-signed commands pin and replay store
-	// (#12257); tests point it at a temp directory. opsignApplyLogged dedups
-	// the warning for a relayed trust bundle that does not apply.
+	// (#12257); tests point it at a temp directory. opsignGate is what
+	// dispatchCommand asks about every command; nil only in tests that build a
+	// bare Heartbeat. opsignApplyLogged dedups the warning for a relayed trust
+	// bundle that does not apply.
 	opsignStore       *opsign.Store
+	opsignGate        *opsign.Gate
 	opsignApplyLogged atomic.Pointer[string]
 	// rebind is the reattach rebind flow's state (#8318, rebind_flow.go).
 	rebind      rebindState
@@ -1413,6 +1416,9 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 		hwhealthCol:                    hwhealth.New(hwhealth.Options{DataDir: config.GetDataDir(), ExtraToolDirs: cfg.Hardware.ToolDirs}),
 		hwConfig:                       hwhealth.Config{Enabled: true, PollInterval: 10 * time.Minute, DiskHealthInterval: time.Hour},
 	}
+	h.opsignGate = &opsign.Gate{Store: h.opsignStore, Identity: func() (opsign.Identity, error) {
+		return opsign.LocalIdentity(h.config.DeviceID, h.config.OrgID)
+	}}
 	// Before any websocket exists, so the first connect's outbox flush carries
 	// a failed result for every command the previous process died running
 	// (#8296).

@@ -101,6 +101,49 @@ const (
 	// the machine-wide isolation lock). Transient — the heartbeat's desired
 	// state retries it.
 	ErrCodeIsolationBusy CommandErrorCode = "isolation_busy"
+
+	// Operator-signed commands (#12257). The agent gate refuses a command that
+	// needs an operator approval and lacks a valid one; the code says why, so
+	// the server's refusal list does not parse English. Under an `audit` trust
+	// bundle the same codes are only logged and the command still runs.
+
+	// ErrCodeOpsignNoApproval: the command needs an operator approval and
+	// carries none.
+	ErrCodeOpsignNoApproval CommandErrorCode = "opsign_no_approval"
+	// ErrCodeOpsignMalformed: the approval cannot be decoded, is not in the
+	// canonical format, or is dated ahead of this device's clock.
+	ErrCodeOpsignMalformed CommandErrorCode = "opsign_malformed"
+	// ErrCodeOpsignBadSignature: the approval names a pinned key but the
+	// signature does not verify.
+	ErrCodeOpsignBadSignature CommandErrorCode = "opsign_bad_signature"
+	// ErrCodeOpsignUnknownKey: the approval was signed by a key that is not in
+	// the trust bundle this device pinned.
+	ErrCodeOpsignUnknownKey CommandErrorCode = "opsign_unknown_key"
+	// ErrCodeOpsignWrongTarget: the approval is for another partner, command
+	// type, device or hostname.
+	ErrCodeOpsignWrongTarget CommandErrorCode = "opsign_wrong_target"
+	// ErrCodeOpsignPayloadMismatch: the command's payload is not the one the
+	// operator approved.
+	ErrCodeOpsignPayloadMismatch CommandErrorCode = "opsign_payload_mismatch"
+	// ErrCodeOpsignExpired: the approval's expiry has passed.
+	ErrCodeOpsignExpired CommandErrorCode = "opsign_expired"
+	// ErrCodeOpsignReplayed: the approval was already used.
+	ErrCodeOpsignReplayed CommandErrorCode = "opsign_replayed"
+	// ErrCodeOpsignPinUnreadable: the pinned trust bundle or the used-approval
+	// store cannot be read or written. Refused in every mode.
+	ErrCodeOpsignPinUnreadable CommandErrorCode = "opsign_pin_unreadable"
+	// ErrCodeOpsignIdentityChanged: this device's ID or organization is not the
+	// one its trust bundle was pinned under.
+	ErrCodeOpsignIdentityChanged CommandErrorCode = "opsign_identity_changed"
+	// ErrCodeOpsignRuleUnsupported: standing-rule approvals are not accepted by
+	// this agent version.
+	ErrCodeOpsignRuleUnsupported CommandErrorCode = "opsign_rule_unsupported"
+	// ErrCodeOpsignUpdateUnapproved: an agent update or rollback is not covered
+	// by an operator approval.
+	ErrCodeOpsignUpdateUnapproved CommandErrorCode = "opsign_update_unapproved"
+	// ErrCodeOpsignBelowFloor: the update is older than the minimum agent
+	// version the trust bundle sets.
+	ErrCodeOpsignBelowFloor CommandErrorCode = "opsign_below_floor"
 )
 
 // AllCommandErrorCodes lists every code above. It is what the cross-language
@@ -132,4 +175,17 @@ var AllCommandErrorCodes = []CommandErrorCode{
 	ErrCodeIsolationStaleGeneration,
 	ErrCodeIsolationInvalidSpec,
 	ErrCodeIsolationBusy,
+	ErrCodeOpsignNoApproval,
+	ErrCodeOpsignMalformed,
+	ErrCodeOpsignBadSignature,
+	ErrCodeOpsignUnknownKey,
+	ErrCodeOpsignWrongTarget,
+	ErrCodeOpsignPayloadMismatch,
+	ErrCodeOpsignExpired,
+	ErrCodeOpsignReplayed,
+	ErrCodeOpsignPinUnreadable,
+	ErrCodeOpsignIdentityChanged,
+	ErrCodeOpsignRuleUnsupported,
+	ErrCodeOpsignUpdateUnapproved,
+	ErrCodeOpsignBelowFloor,
 }

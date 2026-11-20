@@ -200,6 +200,21 @@ const AGENT_ERROR_CODE_KIND: Record<AgentCommandErrorCode, AgentRefusalKind> = {
   isolation_stale_generation: ERROR_CODES.AGENT_COMMAND_REJECTED,
   isolation_invalid_spec: ERROR_CODES.AGENT_COMMAND_REJECTED,
   isolation_busy: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  // Operator-signed command refusals (#12257) ride any Tier A command result;
+  // the agent understood the command and declined it.
+  opsign_no_approval: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_malformed: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_bad_signature: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_unknown_key: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_wrong_target: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_payload_mismatch: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_expired: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_replayed: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_pin_unreadable: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_identity_changed: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_rule_unsupported: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_update_unapproved: ERROR_CODES.AGENT_COMMAND_REJECTED,
+  opsign_below_floor: ERROR_CODES.AGENT_COMMAND_REJECTED,
 };
 
 function failureForKind(kind: AgentRefusalKind, raw: string): CommandFailure {

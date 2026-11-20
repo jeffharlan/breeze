@@ -703,6 +703,20 @@ export const AGENT_COMMAND_ERROR_CODES = [
   'isolation_stale_generation',
   'isolation_invalid_spec',
   'isolation_busy',
+  // Operator-signed commands (#12257): the agent gate's refusals.
+  'opsign_no_approval',
+  'opsign_malformed',
+  'opsign_bad_signature',
+  'opsign_unknown_key',
+  'opsign_wrong_target',
+  'opsign_payload_mismatch',
+  'opsign_expired',
+  'opsign_replayed',
+  'opsign_pin_unreadable',
+  'opsign_identity_changed',
+  'opsign_rule_unsupported',
+  'opsign_update_unapproved',
+  'opsign_below_floor',
 ] as const;
 
 export type AgentCommandErrorCode = (typeof AGENT_COMMAND_ERROR_CODES)[number];

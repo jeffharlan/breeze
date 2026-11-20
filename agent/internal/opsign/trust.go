@@ -26,10 +26,13 @@ var (
 // config and operating system, never from the bundle.
 type Identity struct{ DeviceID, OrgID, Hostname string }
 
+// osHostname is a variable so tests can stand in for the machine's name.
+var osHostname = os.Hostname
+
 // LocalIdentity pairs the enrolled device and org with this machine's hostname,
 // lower-cased because approvals spell hostnames in lower case.
 func LocalIdentity(deviceID, orgID string) (Identity, error) {
-	host, err := os.Hostname()
+	host, err := osHostname()
 	if err != nil {
 		return Identity{}, fmt.Errorf("opsign: local hostname: %w", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/breeze-rmm/agent/internal/collectors"
+	"github.com/breeze-rmm/agent/internal/opsign"
 	"github.com/breeze-rmm/agent/internal/promptkinds"
 	"github.com/breeze-rmm/agent/internal/remote/tools"
 )
@@ -135,6 +136,18 @@ func (h *Heartbeat) dispatchCommand(cmd Command) (tools.CommandResult, bool) {
 			Msg:  "a diagnostic read authorization cannot be used with " + cmd.Type,
 		}, time.Since(start).Milliseconds())
 		return result, true
+	}
+	d := opsign.Decision{Allow: true}
+	if h.opsignGate != nil {
+		d = h.opsignGate.Check(cmd.Type, cmd.Payload, time.Now())
+	}
+	// The approval is the gate's input, never the handler's.
+	delete(cmd.Payload, opsign.PayloadKey)
+	if d.Code != "" {
+		log.Warn("operator approval check failed", "type", cmd.Type, "commandId", cmd.ID, "mode", string(d.Mode), "code", string(d.Code), "reason", d.Reason, "allowed", d.Allow)
+	}
+	if !d.Allow {
+		return tools.NewCodedErrorResult(d.Code, "operator approval refused: "+d.Reason, time.Since(start).Milliseconds()), true
 	}
 	result := handler(h, cmd)
 	// Only override DurationMs if the handler did not set it.
