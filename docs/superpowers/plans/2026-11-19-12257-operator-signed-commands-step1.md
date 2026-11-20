@@ -193,7 +193,7 @@ Classification (165 registry keys: 68 A, 35 B, 62 C; everything not listed under
   - `func (s *Store) ClaimApproval(approvalID string, expiresAt time.Time) error` — `ErrReplayed` if present; prunes entries with `expiresAt <= highWater`.
   - `func (s *Store) ResetHighWater(clock time.Time) error`.
 
-File: JSON, mode `0600`, dir `0700`, temp-file + fsync + rename (same approach as `atomicWriteFile` in `internal/config`). One `sync.Mutex` per store; a package-level map makes `OpenStore` return the same `*Store` for the same path. High-water is persisted on every `ClaimApproval` and otherwise at most once a minute.
+File: JSON, mode `0600`, dir `0700`, temp-file + fsync + rename (same approach as `atomicWriteFile` in `internal/config`). One `sync.Mutex` per store; a package-level map makes `OpenStore` return the same `*Store` for the same path. High-water is persisted on every `ClaimApproval` and otherwise from the local timer tick, written at most once every 10 minutes (rulings R42, R43).
 
 - [ ] **Step 1:** Tests: `TestLoadNoFile`, `TestLoadCorruptIsUnreadable` (garbage bytes, valid JSON with a tampered bundle), `TestPinRoundTrip`, `TestHighWaterNeverMovesBack` (feed clock 10:00, then 09:00 → `Now` returns 10:00; survives reopen), `TestReplayRejected`, `TestReplaySurvivesRestart`, `TestReplayPruned`, `TestReplayConcurrentClaim` (100 goroutines claim the same ID → exactly one nil), `TestFileMode0600` (skip on Windows).
 - [ ] **Step 2:** run → FAIL. **Step 3:** implement. **Step 4:** run → PASS.
