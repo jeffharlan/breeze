@@ -14,10 +14,12 @@ const PayloadKey = "operatorApproval"
 // sets at delivery time that cannot change what runs. Source:
 // apps/api/src/services/scriptDispatch.ts. executionId and batchId are
 // per-delivery IDs; restorePoint is re-resolved at delivery (fresh requestId and
-// validUntil, restorePointRequest.ts); secretEnv/secretEnvEnvelope are
-// server-held values the operator never sees. Accepted limit: a script that
-// executes a secret's value as code can be steered through that value. Every
-// other field, including ones added later, is covered by default.
+// validUntil, restorePointRequest.ts), and the whole block is excluded, its
+// on/off switch included; secretEnv/secretEnvEnvelope are server-held values
+// the operator never sees. Accepted limits: the server can turn off the pre-run
+// restore point without a signature (ruling R8), and a script that executes a
+// secret's value as code can be steered through that value. Every other field,
+// including ones added later, is covered by default.
 var payloadExclusions = map[string][]string{
 	"script": {"executionId", "batchId", "restorePoint", "secretEnv", "secretEnvEnvelope"},
 }

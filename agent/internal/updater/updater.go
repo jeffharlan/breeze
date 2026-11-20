@@ -1053,10 +1053,12 @@ func (u *Updater) updateTo(version string, opts UpdateOptions) (retErr error) {
 		return err
 	}
 	// A version below the trust bundle's floor is refused before anything is
-	// downloaded or touched. checkOperatorTrust checks the signed manifest's
-	// version again.
-	if err := operatorTrustError(operatorGate().CheckFloor(version), u.component(), version); err != nil {
-		return err
+	// downloaded or touched, tagged so the caller backs off this target like
+	// any other artifact it will not install. An audit-mode finding is left to
+	// checkOperatorTrust, which checks the signed manifest's version again and
+	// logs it once.
+	if d := operatorGate().CheckFloor(version); !d.Allow {
+		return asTrustError(ErrManifestSignature, operatorTrustError(d, u.component(), version))
 	}
 	log.Info("starting update", "targetVersion", version)
 

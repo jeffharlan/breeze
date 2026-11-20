@@ -317,6 +317,54 @@ func TestUpdateApprovalCoversTheWholeManifest(t *testing.T) {
 	})
 }
 
+// The key ID verifyManifestSignature returns decides whether an update needs an
+// operator approval: only an embedded (vendor) key is exempt. On the ID-less
+// compatibility path a keyed non-vendor key must return its own ID and a bare
+// legacy key "", and neither may pass as the vendor's.
+func TestVerifyManifestSignatureNamesTheKeyOnTheIDLessPath(t *testing.T) {
+	vendorPub, vendorPriv, _ := ed25519.GenerateKey(nil)
+	keyedPub, keyedPriv, _ := ed25519.GenerateKey(nil)
+	barePub, barePriv, _ := ed25519.GenerateKey(nil)
+	installEmbeddedManifestKey(t, testEmbeddedKeyID, vendorPub)
+	captureUnusableTrustSetLog(t)
+	countingWarner(t)
+	enc := base64.StdEncoding.EncodeToString
+	t.Setenv("BREEZE_UPDATE_MANIFEST_PUBLIC_KEYS", "selfhost-2026:"+enc(keyedPub)+","+enc(barePub))
+	u := &Updater{config: &Config{Component: "agent"}}
+
+	for name, tc := range map[string]struct {
+		priv ed25519.PrivateKey
+		want string
+	}{
+		"embedded vendor key":   {vendorPriv, testEmbeddedKeyID},
+		"keyed environment key": {keyedPriv, "selfhost-2026"},
+		"bare legacy key":       {barePriv, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload, sigB64, checksum := signManifestFor(t, "1.2.3", tc.priv)
+			sig, err := base64.StdEncoding.DecodeString(sigB64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, err := u.verifyManifestSignature([]byte(payload), sig, ""); err != nil || got != tc.want {
+				t.Fatalf("matched key = %q, %v; want %q", got, err, tc.want)
+			}
+
+			pinOperatorTrust(t, opsign.ModeEnforce, "")
+			_, err = u.verifyUpdateManifest(downloadInfo{
+				URL: "https://updates.example.invalid/agent", Checksum: checksum, Manifest: payload, ManifestSignature: sigB64,
+			}, "1.2.3")
+			if tc.want == testEmbeddedKeyID {
+				if err != nil {
+					t.Fatalf("vendor-signed manifest: %v", err)
+				}
+				return
+			}
+			wantRefusal(t, err, "opsign_update_unapproved")
+		})
+	}
+}
+
 func TestVendorSignedUpdateNeedsNoApproval(t *testing.T) {
 	pinOperatorTrust(t, opsign.ModeEnforce, "v1.0.0")
 	content := []byte("agent 1.2.3 from the vendor")
@@ -345,13 +393,18 @@ func TestUpdateBelowFloorIsRefusedWhoeverSignedIt(t *testing.T) {
 				return info(host)
 			}, unusableBytes(content), Config{})
 
-			// UpdateTo refuses a version below the floor before it asks the server for anything.
-			wantRefusal(t, f.u.UpdateTo("1.2.3"), "opsign_below_floor")
+			// UpdateTo refuses a version below the floor before it asks the server
+			// for anything, and the caller backs off that target.
+			err := f.u.UpdateTo("1.2.3")
+			wantRefusal(t, err, "opsign_below_floor")
+			if !IsDeterministicArtifactFailure(err) {
+				t.Errorf("%v must back off like any other artifact the device will not install", err)
+			}
 			if offers.Load() != 0 {
 				t.Errorf("UpdateTo asked the server for the artifact %d time(s) before refusing", offers.Load())
 			}
 			// Every other path is stopped once the signed manifest names the version.
-			_, err := f.u.DownloadBinary("1.2.3")
+			_, err = f.u.DownloadBinary("1.2.3")
 			wantRefusal(t, err, "opsign_below_floor")
 			f.wantUntouched(t)
 		})

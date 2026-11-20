@@ -71,7 +71,9 @@ func TestVerifyES256(t *testing.T) {
 		{"different key", otherSPKI, msg, sig, false},
 		{"DER signature", spki, msg, enc(der), false},
 		{"63-byte signature", spki, msg, enc(rawSig[:63]), false},
-		{"65-byte signature", spki, msg, enc(append(append([]byte(nil), rawSig...), 0)), false},
+		// r || 0x00 || s still reads as r and s (the zero becomes a leading zero
+		// of s), so only the 64-byte rule refuses it.
+		{"65-byte signature", spki, msg, enc(append(append(append([]byte(nil), rawSig[:32]...), 0), rawSig[32:]...)), false},
 		{"empty signature", spki, msg, "", false},
 		{"signature not base64", spki, msg, "!!!!", false},
 		{"base64 with a newline", spki, msg, sig[:40] + "\n" + sig[40:], false},
