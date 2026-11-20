@@ -248,11 +248,11 @@ In `dispatchCommand`: `d := h.opsignGate.Check(cmd.Type, cmd.Payload, time.Now()
 
 **Interfaces:**
 - Consumes: Task 7 `Gate`, `versionpolicy.Normalize`.
-- Produces: `func (u *Updater) verifyManifestSignature(payload, signature []byte, signingKeyID string) (matchedKeyID string, err error)`; `type UpdateCheck struct{ Version, ArtifactSHA256 string; VendorSigned bool; Approval *Carrier; Clock time.Time }`; `func DefaultGate() *Gate` (store at `DefaultStorePath()`, identity from `config.Load("")`), used by the updater so every caller — `updateTo`, `DownloadBinary`, `StageRollbackArtifacts`, helper downloads, watchdog `doUpdateAgent`/`doUpdateWatchdog` — inherits it with no wiring.
+- Produces: `func (u *Updater) verifyManifestSignature(payload, signature []byte, signingKeyID string) (matchedKeyID string, err error)`; `type UpdateCheck struct{ Version string; Manifest []byte; VendorSigned bool; Approval *Carrier; Clock time.Time }`; `func DefaultGate() *Gate` (store at `DefaultStorePath()`, identity from `config.Load("")`), used by the updater so every caller — `updateTo`, `DownloadBinary`, `StageRollbackArtifacts`, helper downloads, watchdog `doUpdateAgent`/`doUpdateWatchdog` — inherits it with no wiring.
 
 `CheckUpdate` (spec §4), only when a pin exists (unreadable pin → refuse):
 - `Version < bundle.MinAgentVersion` (both via `versionpolicy.Normalize`; an unparsable target is below the floor) → `opsign_below_floor`, **whoever signed it**.
-- `VendorSigned` = the matched key is one of `embeddedManifestPublicKeys`. If not vendor-signed: require `Approval` as an action envelope with `commandType = "agent_update"` and an entry for this device whose `payloadHash` = `ArtifactSHA256` (plain artifact hash, not JCS), plus the same key/signature/expiry/replay checks as `Check` → else `opsign_update_unapproved`.
+- `VendorSigned` = the matched key is one of `embeddedManifestPublicKeys`. If not vendor-signed: require `Approval` as an action envelope with `commandType = "agent_update"` and an entry for this device whose `payloadHash` = SHA-256 of `Manifest`, the exact manifest text whose signature was just verified (spec §3 exception, ruling R40; not JCS), plus the same key/signature/expiry checks as `Check` — not single-use (R41), the prune floor still applies → else `opsign_update_unapproved`.
 - `audit` logs and allows.
 - Artifact SHA-256 and version: `updateManifest.Checksum` / `.Version`; for release-style manifests the asset `verifyReleaseArtifactManifest` selected and `.Release`.
 
