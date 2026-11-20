@@ -285,7 +285,7 @@ fields (rebind/identity, time sync, containment state). Steps:
 2. No pin → allow (mode `off`). Pin unreadable, or a `trust reset` still waiting for its bundle →
    refuse.
 3. Find the `operatorApproval` field (action envelope, or rule envelope attached at delivery).
-4. Verify signature against a pinned key of a role allowed for this kind; check partner, own
+4. Verify signature against a pinned key of a role allowed for this kind (action and `agent_update`: admin or approver; rule: admin only); check partner, own
    deviceId + hostname, command type, payload hash recomputed from **this** payload, expiry against
    high-water time.
 5. Action: record `approvalId`; refuse reuse. Rule: refuse older `ruleEpoch`; honor `once`.

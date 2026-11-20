@@ -81,6 +81,21 @@ func (f *gateFixture) sign(a ActionApproval, k testKey) Carrier {
 	return Carrier{V: 1, CanonicalB64: b64(canonical), SignatureB64: signRaw(f.t, k.priv, canonical)}
 }
 
+// signRule is a rule envelope for script commands, naming and signed by k.
+func (f *gateFixture) signRule(k testKey) Carrier {
+	f.t.Helper()
+	rule := Rule{
+		RuleID: gateApprovalID, RuleEpoch: 1, PartnerID: partnerID, ScopeOrgID: orgID,
+		CommandType: "script", MatchKind: "payloadHashes", MatchItems: []string{strings.Repeat("a", 64)},
+		NotAfter: t0.Add(24 * time.Hour), KeyID: k.key.KeyID,
+	}
+	canonical, err := rule.CanonicalBytes()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return Carrier{V: 1, CanonicalB64: b64(canonical), SignatureB64: signRaw(f.t, k.priv, canonical)}
+}
+
 // attach returns payload carrying c the way a decoded command does: as the
 // generic JSON value, not as a Carrier struct.
 func attach(t *testing.T, payload map[string]any, c Carrier) map[string]any {
@@ -271,17 +286,7 @@ func TestGateEachRefusalCode(t *testing.T) {
 			a.ExpiresAt = a.IssuedAt.Add(time.Hour)
 		})},
 		{"rule envelope", wire.ErrCodeOpsignRuleUnsupported, func(f *gateFixture) map[string]any {
-			rule := Rule{
-				RuleID: gateApprovalID, RuleEpoch: 1, PartnerID: partnerID, ScopeOrgID: orgID,
-				CommandType: "script", MatchKind: "payloadHashes", MatchItems: []string{strings.Repeat("a", 64)},
-				NotAfter: t0.Add(24 * time.Hour), KeyID: f.ops.approver.key.KeyID,
-			}
-			canonical, err := rule.CanonicalBytes()
-			if err != nil {
-				f.t.Fatal(err)
-			}
-			c := Carrier{V: 1, CanonicalB64: b64(canonical), SignatureB64: signRaw(f.t, f.ops.approver.priv, canonical)}
-			return attach(f.t, scriptPayload(), c)
+			return attach(f.t, scriptPayload(), f.signRule(f.ops.admin1))
 		}},
 		{"key not in the bundle", wire.ErrCodeOpsignUnknownKey, func(f *gateFixture) map[string]any {
 			p := scriptPayload()
@@ -335,6 +340,28 @@ func TestGateEachRefusalCode(t *testing.T) {
 			// An unreadable pin has no mode to report.
 			if tc.code != wire.ErrCodeOpsignPinUnreadable && d.Mode != ModeEnforce {
 				t.Errorf("mode = %q, want enforce", d.Mode)
+			}
+		})
+	}
+}
+
+// Standing rules are admin-only; this agent refuses them all (step 1), but an
+// approver's rule must fail at the key, not be taken for a rule it merely cannot run.
+func TestGateRuleNeedsAnAdminKey(t *testing.T) {
+	for _, mode := range []Mode{ModeEnforce, ModeAudit} {
+		t.Run(string(mode), func(t *testing.T) {
+			f := newGateFixture(t, mode)
+			before := fileBytes(t, f.path)
+			d := f.check(attach(t, scriptPayload(), f.signRule(f.ops.approver)))
+			if d.Allow != (mode == ModeAudit) || d.Code != wire.ErrCodeOpsignUnknownKey || d.Reason == "" {
+				t.Fatalf("approver-signed rule: %+v, want %s (allow only in audit)", d, wire.ErrCodeOpsignUnknownKey)
+			}
+			d = f.check(attach(t, scriptPayload(), f.signRule(f.ops.admin1)))
+			if d.Code != wire.ErrCodeOpsignRuleUnsupported {
+				t.Fatalf("admin-signed rule: %+v, want it to pass the key checks and stop at %s", d, wire.ErrCodeOpsignRuleUnsupported)
+			}
+			if after := fileBytes(t, f.path); string(after) != string(before) {
+				t.Fatal("a refused rule envelope changed the state file")
 			}
 		})
 	}

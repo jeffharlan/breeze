@@ -208,17 +208,25 @@ func (g *Gate) verifyApproval(pin *Pin, bundle Bundle, id Identity, c Carrier, c
 	if err != nil {
 		return wire.ErrCodeOpsignMalformed, err.Error()
 	}
-	approval, ok := envelope.(ActionApproval) // the only other kind is a Rule
-	if !ok {
-		return wire.ErrCodeOpsignRuleUnsupported, "standing-rule approvals are not accepted by this agent"
+	approval, isAction := envelope.(ActionApproval)
+	signer := approval.KeyID
+	if !isAction {
+		signer = envelope.(Rule).KeyID // the only other kind
 	}
 
-	i := slices.IndexFunc(bundle.Keys, func(k BundleKey) bool { return k.KeyID == approval.KeyID })
+	i := slices.IndexFunc(bundle.Keys, func(k BundleKey) bool { return k.KeyID == signer })
 	if i < 0 {
 		return wire.ErrCodeOpsignUnknownKey, "the approval was signed by a key that is not in the pinned trust bundle"
 	}
+	// Actions take either role; a standing rule can be signed by an admin only.
+	if !isAction && bundle.Keys[i].Role != RoleAdmin {
+		return wire.ErrCodeOpsignUnknownKey, "a standing rule was signed by a key whose role is not admin"
+	}
 	if VerifyES256(bundle.Keys[i].SPKIB64, canonical, c.SignatureB64) != nil {
 		return wire.ErrCodeOpsignBadSignature, "the approval's signature does not verify"
+	}
+	if !isAction {
+		return wire.ErrCodeOpsignRuleUnsupported, "standing-rule approvals are not accepted by this agent"
 	}
 
 	// The device's own hostname, not the pinned one: a rename must void approvals
