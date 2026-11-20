@@ -1,6 +1,7 @@
 package updater
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -151,9 +152,18 @@ type updateFixture struct {
 	binary string
 }
 
-func newUpdateFixture(t *testing.T, info func(host string) downloadInfo, content []byte, cfg Config) updateFixture {
+// unusableBytes has the artifact's length but not its bytes. A test that calls
+// UpdateTo serves it, so that if the gate under test ever failed to refuse, the
+// download would still die at the checksum check, before the binary is backed
+// up or replaced and before the real service restart.
+func unusableBytes(content []byte) []byte {
+	return bytes.Repeat([]byte{'x'}, len(content))
+}
+
+// newUpdateFixture offers info and serves the bytes served as the artifact.
+func newUpdateFixture(t *testing.T, info func(host string) downloadInfo, served []byte, cfg Config) updateFixture {
 	t.Helper()
-	srv := downloadServer(t, info, content, 0, 0)
+	srv := downloadServer(t, info, served, 0, 0)
 	t.Cleanup(srv.Close)
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "agent")
@@ -205,7 +215,7 @@ func TestDeploymentSignedUpdateNeedsOperatorApproval(t *testing.T) {
 
 	t.Run("refused without an approval, and nothing is replaced", func(t *testing.T) {
 		pinOperatorTrust(t, opsign.ModeEnforce, "v1.0.0")
-		f := newUpdateFixture(t, offer(nil), content, cfg)
+		f := newUpdateFixture(t, offer(nil), unusableBytes(content), cfg)
 		err := f.u.UpdateTo("1.2.3")
 		wantRefusal(t, err, "opsign_update_unapproved")
 		if !IsDeterministicArtifactFailure(err) {
@@ -267,7 +277,7 @@ func TestUpdateBelowFloorIsRefusedWhoeverSignedIt(t *testing.T) {
 			f := newUpdateFixture(t, func(host string) downloadInfo {
 				offers.Add(1)
 				return info(host)
-			}, content, Config{})
+			}, unusableBytes(content), Config{})
 
 			// UpdateTo refuses a version below the floor before it asks the server for anything.
 			wantRefusal(t, f.u.UpdateTo("1.2.3"), "opsign_below_floor")
