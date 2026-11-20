@@ -96,6 +96,9 @@ var notPowerSites = map[site]string{
 	{"internal/remote/tools/types.go", packageLevel, "reboot"}:   "the command's wire name",
 	{"internal/remote/tools/types.go", packageLevel, "shutdown"}: "the command's wire name",
 
+	{"internal/opsign/tiers.go", packageLevel, "reboot"}:   "the command's wire name in the operator-signing tier table",
+	{"internal/opsign/tiers.go", packageLevel, "shutdown"}: "the command's wire name in the operator-signing tier table",
+
 	{"internal/tunnel/manager.go", "*", "shutdown"}:        "a reason string for closing screen sharing",
 	{"internal/userhelper/supervisor.go", "*", "shutdown"}: "a stop reason for the helper supervisor",
 
