@@ -50,6 +50,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/networkdiagnostic"
 	"github.com/breeze-rmm/agent/internal/observability"
 	"github.com/breeze-rmm/agent/internal/onedrivehelper"
+	"github.com/breeze-rmm/agent/internal/opsign"
 	"github.com/breeze-rmm/agent/internal/pamdecline"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/patching"
@@ -407,6 +408,10 @@ type HeartbeatResponse struct {
 	// against the currently-pinned key it names.
 	ManifestKeyDelegations            []api.ManifestKeyDelegation `json:"manifestKeyDelegations,omitempty"`
 	AcknowledgedRollbackObservationID string                      `json:"acknowledgedRollbackObservationId,omitempty"`
+	// OperatorTrustBundle (#12257) is the operator trust bundle the server
+	// relays. Nothing here is trusted on receipt; opsign.ApplyBundle checks the
+	// operators' signatures.
+	OperatorTrustBundle *opsign.SignedBundle `json:"operatorTrustBundle,omitempty"`
 	// RecoveryMarkerAck (W04a) is true only when this beat's recoveryMarker
 	// matched — its absence means no ack yet (or no marker was sent).
 	RecoveryMarkerAck bool `json:"recoveryMarkerAck,omitempty"`
@@ -483,6 +488,11 @@ func (h *Heartbeat) lifecycleMode() string {
 }
 
 type Heartbeat struct {
+	// opsignStore is the operator-signed commands pin and replay store
+	// (#12257); tests point it at a temp directory. opsignApplyLogged dedups
+	// the warning for a relayed trust bundle that does not apply.
+	opsignStore       *opsign.Store
+	opsignApplyLogged atomic.Pointer[string]
 	// rebind is the reattach rebind flow's state (#8318, rebind_flow.go).
 	rebind      rebindState
 	containment *containmentRuntime
@@ -1354,6 +1364,7 @@ func NewWithVersion(cfg *config.Config, version string, token *secmem.SecureStri
 
 	outboxRoot := backupResultOutboxDir()
 	h := &Heartbeat{
+		opsignStore:   opsign.OpenStore(opsign.DefaultStorePath()),
 		config:        cfg,
 		secureToken:   secToken,
 		client:        httpClient,
@@ -6259,6 +6270,7 @@ func (h *Heartbeat) processHeartbeatResponse(response *HeartbeatResponse) {
 	// TOFU key, and only then can a delegation naming that key as its old key
 	// be verified.
 	h.applyManifestKeyDelegations(response.ManifestKeyDelegations)
+	h.applyOperatorTrustBundle(response.OperatorTrustBundle)
 
 	// A rollback delivered in this response becomes active only once its
 	// command runs, so look for it before anything is scheduled against it.

@@ -31,6 +31,7 @@ import (
 	"github.com/breeze-rmm/agent/internal/logging"
 	"github.com/breeze-rmm/agent/internal/mtls"
 	"github.com/breeze-rmm/agent/internal/observability"
+	"github.com/breeze-rmm/agent/internal/opsign"
 	"github.com/breeze-rmm/agent/internal/pamactuator"
 	"github.com/breeze-rmm/agent/internal/pamlifetime"
 	"github.com/breeze-rmm/agent/internal/promptidentity"
@@ -998,6 +999,14 @@ func startAgent(cfg *config.Config) (*agentComponents, error) {
 
 	if cfg.IsHeadless {
 		log.Info("running in headless/daemon mode (no console attached)")
+	}
+
+	// #12257 — pin the operator trust bundle an installer left beside
+	// agent.yaml. Never in support mode, whose data folder is its own.
+	if !cfg.SupportMode {
+		if err := pinOperatorTrustFile(opsign.OpenStore(opsign.DefaultStorePath()), filepath.Join(config.ConfigDir(), "operator-trust.json"), cfg); err != nil {
+			log.Warn("operator trust bundle in operator-trust.json was not applied", "error", err.Error())
+		}
 	}
 
 	// Start heartbeat - this implements the main agent run loop
