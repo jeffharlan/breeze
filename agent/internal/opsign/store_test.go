@@ -237,9 +237,45 @@ func TestReplayPruned(t *testing.T) {
 	if err := s.ClaimApproval("live", t0.Add(2*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	got := fileState(t, path).Approvals
-	if len(got) != 1 || got["live"].IsZero() {
-		t.Fatalf("approvals on disk = %v; want only \"live\" (entries at or before high-water are dropped)", got)
+	st := fileState(t, path)
+	if len(st.Approvals) != 1 || st.Approvals["live"].IsZero() {
+		t.Fatalf("approvals on disk = %v; want only \"live\" (entries at or before high-water are dropped)", st.Approvals)
+	}
+	if !st.PruneFloor.Equal(t0.Add(time.Hour)) {
+		t.Fatalf("PruneFloor = %v, want the latest dropped expiry (11:00)", st.PruneFloor)
+	}
+}
+
+func TestResetHighWaterDoesNotReviveSpentApproval(t *testing.T) {
+	path := statePath(t)
+	s := OpenStore(path)
+	s.Now(t0)
+	spentExpiry := t0.Add(30 * time.Minute)
+	if err := s.ClaimApproval("spent", spentExpiry); err != nil {
+		t.Fatal(err)
+	}
+	s.ObserveIssuedAt(t0.Add(time.Hour))
+	if err := s.ClaimApproval("later", t0.Add(2*time.Hour)); err != nil { // drops "spent"
+		t.Fatal(err)
+	}
+	if _, kept := fileState(t, path).Approvals["spent"]; kept {
+		t.Fatal("setup: \"spent\" should have been dropped from the list")
+	}
+
+	if err := s.ResetHighWater(t0.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClaimApproval("spent", spentExpiry); !errors.Is(err, ErrReplayed) {
+		t.Fatalf("re-claim after a backwards reset = %v, want ErrReplayed", err)
+	}
+	if err := restart(path).ClaimApproval("spent", spentExpiry); !errors.Is(err, ErrReplayed) {
+		t.Fatalf("re-claim after reset and restart = %v, want ErrReplayed", err)
+	}
+	if got := fileState(t, path).PruneFloor; !got.Equal(spentExpiry) {
+		t.Fatalf("PruneFloor = %v, want it untouched by the reset (%v)", got, spentExpiry)
+	}
+	if err := s.ClaimApproval("fresh", t0.Add(3*time.Hour)); err != nil {
+		t.Fatalf("an approval expiring after the floor must still be claimable: %v", err)
 	}
 }
 
@@ -297,14 +333,33 @@ func TestClearPinKeepsClockAndReplayList(t *testing.T) {
 
 func TestSavePinConsumesExpectedFingerprint(t *testing.T) {
 	s := OpenStore(statePath(t))
-	if err := s.ClearPin("0123456789abcdef0123456789abcdef"); err != nil {
+	pin := samplePin(t)
+	if err := s.ClearPin(pin.Fingerprint); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SavePin(samplePin(t)); err != nil {
+	if err := s.SavePin(pin); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.ExpectFingerprint(); got != "" {
 		t.Fatalf("ExpectFingerprint after the pin landed = %q, want empty", got)
+	}
+}
+
+func TestSavePinRefusesBundleOtherThanExpected(t *testing.T) {
+	path := statePath(t)
+	s := OpenStore(path)
+	other := "0123456789abcdef0123456789abcdef"
+	if err := s.ClearPin(other); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SavePin(samplePin(t)); !errors.Is(err, ErrUnexpectedBundle) {
+		t.Fatalf("SavePin = %v, want ErrUnexpectedBundle", err)
+	}
+	if pin, err := s.Load(); pin != nil || err != nil {
+		t.Fatalf("a refused bundle was pinned: %v, %v", pin, err)
+	}
+	if got := s.ExpectFingerprint(); got != other {
+		t.Fatalf("a refused bundle consumed the expectation: %q", got)
 	}
 }
 
@@ -332,6 +387,9 @@ func TestUnreadableFileIsNeverOverwrittenByRoutineWrites(t *testing.T) {
 	}
 	if err := s.ResetHighWater(t0); !errors.Is(err, ErrPinUnreadable) {
 		t.Fatalf("ResetHighWater = %v, want ErrPinUnreadable", err)
+	}
+	if err := s.SavePin(samplePin(t)); !errors.Is(err, ErrPinUnreadable) {
+		t.Fatalf("SavePin = %v, want ErrPinUnreadable (only ClearPin repairs)", err)
 	}
 	if got := s.Now(t0); !got.Equal(t0) {
 		t.Fatalf("Now = %v", got)
@@ -373,6 +431,146 @@ func TestChangeByAnotherProcessIsNotOverwritten(t *testing.T) {
 	st := fileState(t, path)
 	if st.Pin != nil || st.ExpectFingerprint != "0123456789abcdef0123456789abcdef" || !st.HighWater.Equal(t0.Add(-time.Hour)) {
 		t.Fatalf("the agent's write undid the other process's change: %+v", st)
+	}
+}
+
+func TestTamperedPinKeepsClockAndUsedApprovals(t *testing.T) {
+	path := statePath(t)
+	bad := samplePin(t)
+	bad.Fingerprint = strings.Repeat("0", 32)
+	writeState(t, path, state{
+		Pin:        &bad,
+		HighWater:  t0,
+		Approvals:  map[string]time.Time{"spent": t0.Add(time.Hour)},
+		PruneFloor: t0.Add(-time.Hour),
+	})
+	s := OpenStore(path)
+	if _, err := s.Load(); !errors.Is(err, ErrPinUnreadable) {
+		t.Fatalf("Load = %v, want ErrPinUnreadable", err)
+	}
+	if err := s.ClearPin("0123456789abcdef0123456789abcdef"); err != nil {
+		t.Fatal(err)
+	}
+	s = restart(path)
+	if err := s.ClaimApproval("spent", t0.Add(time.Hour)); !errors.Is(err, ErrReplayed) {
+		t.Fatalf("repairing the pin forgot a used approval: %v", err)
+	}
+	if got := s.Now(t0.Add(-time.Hour)); !got.Equal(t0) {
+		t.Fatalf("repairing the pin moved the clock back to %v", got)
+	}
+	if got := fileState(t, path).PruneFloor; !got.Equal(t0.Add(-time.Hour)) {
+		t.Fatalf("repairing the pin lost the prune floor: %v", got)
+	}
+}
+
+// Each goroutine has its own Store (as separate processes would), so only the
+// file lock keeps them from both reading "unused" and both claiming.
+func TestClaimAcrossStoresExactlyOnce(t *testing.T) {
+	path := statePath(t)
+	var wins, replays atomic.Int32
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			switch err := (&Store{path: path}).ClaimApproval("same", t0.Add(time.Hour)); {
+			case err == nil:
+				wins.Add(1)
+			case errors.Is(err, ErrReplayed):
+				replays.Add(1)
+			default:
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins.Load() != 1 || replays.Load() != 49 {
+		t.Fatalf("wins=%d replays=%d, want 1 and 49", wins.Load(), replays.Load())
+	}
+}
+
+func TestMutationWaitsForFileLockHeldElsewhere(t *testing.T) {
+	path := statePath(t)
+	holder := &Store{path: path}
+	unlock, err := holder.lockFile(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		unlock()
+	}()
+	start := time.Now()
+	if err := OpenStore(path).ClaimApproval("a", t0.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) < 90*time.Millisecond {
+		t.Fatal("ClaimApproval did not wait for the lock another holder had")
+	}
+}
+
+func TestHighWaterFlushSkipsWhenLockIsBusy(t *testing.T) {
+	path := statePath(t)
+	holder := &Store{path: path}
+	unlock, err := holder.lockFile(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	start := time.Now()
+	if got := OpenStore(path).Now(t0); !got.Equal(t0) {
+		t.Fatalf("Now = %v", got)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("a time-only update waited on the lock; it should skip and try again later")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("flush wrote while another holder had the lock: %v", err)
+	}
+}
+
+func stubRename(t *testing.T, fn func(from, to string) error) {
+	t.Helper()
+	oldRename, oldSleep := renameFile, renameSleep
+	renameFile, renameSleep = fn, func(time.Duration) {}
+	t.Cleanup(func() { renameFile, renameSleep = oldRename, oldSleep })
+}
+
+func TestWriteRetriesTransientRenameFailure(t *testing.T) {
+	path := statePath(t)
+	failures := 2
+	stubRename(t, func(from, to string) error {
+		if failures > 0 {
+			failures--
+			return errors.New("sharing violation")
+		}
+		return os.Rename(from, to)
+	})
+	if err := OpenStore(path).ClaimApproval("a", t0.Add(time.Hour)); err != nil {
+		t.Fatalf("a rename that succeeds on the 3rd try must not fail the claim: %v", err)
+	}
+	if _, ok := fileState(t, path).Approvals["a"]; !ok {
+		t.Fatal("claim missing from the file")
+	}
+}
+
+func TestWriteGivesUpAndLeavesNothingBehind(t *testing.T) {
+	path := statePath(t)
+	attempts := 0
+	stubRename(t, func(string, string) error { attempts++; return errors.New("sharing violation") })
+	s := OpenStore(path)
+	if err := s.ClaimApproval("a", t0.Add(time.Hour)); err == nil {
+		t.Fatal("claim succeeded though the file could not be replaced")
+	}
+	if attempts != renameAttempts {
+		t.Fatalf("rename attempts = %d, want %d", attempts, renameAttempts)
+	}
+	if _, err := os.Stat(path + ".partial"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temp file left behind: %v", err)
+	}
+	renameFile = os.Rename
+	if err := s.ClaimApproval("a", t0.Add(time.Hour)); err != nil {
+		t.Fatalf("the approval must stay unspent after a failed write: %v", err)
 	}
 }
 

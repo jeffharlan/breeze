@@ -19,7 +19,12 @@ var (
 	// gate refuses Tier A for it in every mode: treating it as "no pin" would let
 	// whoever corrupts the file switch the check off.
 	ErrPinUnreadable = errors.New("opsign: pin unreadable")
-	ErrReplayed      = errors.New("opsign: approval already used")
+	// ErrReplayed covers an approval on the used list and one so old that the
+	// list has already forgotten it (see state.PruneFloor).
+	ErrReplayed = errors.New("opsign: approval already used")
+	// ErrUnexpectedBundle means the bundle offered to SavePin is not the one the
+	// administrator named in ClearPin.
+	ErrUnexpectedBundle = errors.New("opsign: bundle is not the one the administrator expects")
 )
 
 // DefaultStorePath is a var so tests can point the agent at a temp directory.
@@ -31,6 +36,13 @@ var DefaultStorePath = func() string {
 // disk before a clock reading alone is written out. Advancing by the clock
 // (not by wall time) keeps a stuck or rolled-back clock from causing writes.
 const highWaterFlushEvery = time.Minute
+
+const (
+	lockWait  = 5 * time.Second
+	lockRetry = 10 * time.Millisecond
+)
+
+var errLockBusy = errors.New("opsign: state lock is busy")
 
 // Pin is the trust bundle a device accepted, with the identity it was pinned
 // under. Identity comes from the device, never from the bundle.
@@ -54,6 +66,10 @@ type state struct {
 	// Approvals maps each used approvalId to its expiry; an entry is dropped
 	// once high-water time reaches that expiry.
 	Approvals map[string]time.Time `json:"approvals"`
+	// PruneFloor is the latest expiry ever dropped from Approvals. It never
+	// decreases, so ResetHighWater cannot make a dropped approval claimable
+	// again: anything expiring at or before it is refused as replayed.
+	PruneFloor time.Time `json:"pruneFloor"`
 }
 
 var (
@@ -129,24 +145,31 @@ func (s *Store) refresh() {
 			s.fail(err)
 			return
 		}
-		if st.Pin != nil {
-			if err := st.Pin.check(); err != nil {
-				s.fail(err)
-				return
-			}
-		}
 	}
 	if st.Approvals == nil {
 		st.Approvals = map[string]time.Time{}
 	}
+	var pinErr error
+	if st.Pin != nil {
+		if pinErr = st.Pin.check(); pinErr != nil {
+			// The clock and used list parsed fine; keep them so a later ClearPin
+			// or SavePin cannot write zeros over them.
+			st.Pin, st.ExpectFingerprint = nil, ""
+		}
+	}
 	s.st, s.loadErr, s.flushedHighWater = st, nil, st.HighWater
+	if pinErr != nil {
+		s.loadErr = unreadable(pinErr)
+	}
 }
 
-// fail marks the file unreadable but keeps the clock and the used-approval
-// list this process already holds.
+func unreadable(err error) error { return fmt.Errorf("%w: %v", ErrPinUnreadable, err) }
+
+// fail marks a file that did not parse unreadable but keeps the clock and the
+// used-approval list this process already holds.
 func (s *Store) fail(err error) {
-	s.loadErr = fmt.Errorf("%w: %v", ErrPinUnreadable, err)
-	s.st = state{HighWater: s.st.HighWater, Approvals: s.st.Approvals}
+	s.loadErr = unreadable(err)
+	s.st = state{HighWater: s.st.HighWater, Approvals: s.st.Approvals, PruneFloor: s.st.PruneFloor}
 }
 
 // update applies fn to a copy of the state and writes it. Memory changes only
@@ -161,6 +184,45 @@ func (s *Store) update(fn func(*state)) error {
 	}
 	s.st, s.loadErr = next, nil
 	return nil
+}
+
+// lockFile takes an exclusive advisory lock on a sidecar file, retrying for up
+// to wait (0 = one try). Another process (the CLI, the watchdog) doing its own
+// read-modify-write would otherwise lose one of the two updates, and a lost
+// claim is a replayable approval. Closing the returned handle releases it.
+func (s *Store) lockFile(wait time.Duration) (unlock func(), err error) {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		err := tryLock(f)
+		if err == nil {
+			return func() { _ = f.Close() }, nil
+		}
+		if !errors.Is(err, errLockBusy) || !time.Now().Before(deadline) {
+			_ = f.Close()
+			return nil, err
+		}
+		time.Sleep(lockRetry)
+	}
+}
+
+// begin takes the in-process mutex and the file lock, then re-reads the file,
+// for a call that reads, changes and writes the state.
+func (s *Store) begin() (end func(), err error) {
+	s.mu.Lock()
+	unlock, err := s.lockFile(lockWait)
+	if err != nil {
+		s.mu.Unlock()
+		return nil, err
+	}
+	s.refresh()
+	return func() { unlock(); s.mu.Unlock() }, nil
 }
 
 func (s *Store) write(st state) error {
@@ -178,9 +240,37 @@ func (s *Store) write(st state) error {
 	return nil
 }
 
-// writeFileAtomic is internal/config's atomicWriteFile minus its Windows
-// rename retry: temp file, fsync, rename, so a crash leaves the old file or the
-// new one and never a half-written one (which would read as an unreadable pin).
+// renameFile and renameSleep let tests inject rename failures without waiting.
+var (
+	renameFile  = os.Rename
+	renameSleep = time.Sleep
+)
+
+const (
+	renameAttempts = 6
+	renameBackoff  = 25 * time.Millisecond
+)
+
+// renameWithRetry follows internal/config's helper: on Windows a rename onto a
+// file another process holds open (antivirus, a reader without share-delete)
+// fails until that process lets go. Elsewhere a failure repeats and the retries
+// only delay the error by under a second.
+func renameWithRetry(from, to string) error {
+	var err error
+	for attempt := 0; attempt < renameAttempts; attempt++ {
+		if attempt > 0 {
+			renameSleep(renameBackoff << (attempt - 1))
+		}
+		if err = renameFile(from, to); err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+// writeFileAtomic is internal/config's atomicWriteFile: temp file, fsync,
+// rename, so a crash leaves the old file or the new one and never a
+// half-written one (which would read as an unreadable pin).
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	tmp := path + ".partial"
 	_ = os.Remove(tmp)
@@ -196,7 +286,7 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(tmp, path)
+		err = renameWithRetry(tmp, path)
 	}
 	if err != nil {
 		_ = os.Remove(tmp)
@@ -225,16 +315,25 @@ func (s *Store) Load() (*Pin, error) {
 	return &p, nil
 }
 
-// SavePin replaces the pin, repairing an unreadable file, and consumes the
-// fingerprint ClearPin asked for. It refuses a pin Load would later reject,
-// which would lock the device out of Tier A.
+// SavePin replaces the pin and consumes the fingerprint ClearPin asked for. It
+// refuses an unreadable file (ClearPin is the one repair path), a bundle other
+// than the expected one, and a pin Load would later reject, which would lock
+// the device out of Tier A.
 func (s *Store) SavePin(p Pin) error {
 	if err := p.check(); err != nil {
 		return fmt.Errorf("opsign: refusing to save an unreadable pin: %w", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.refresh()
+	end, err := s.begin()
+	if err != nil {
+		return err
+	}
+	defer end()
+	if s.loadErr != nil {
+		return s.loadErr
+	}
+	if want := s.st.ExpectFingerprint; want != "" && p.Fingerprint != want {
+		return ErrUnexpectedBundle
+	}
 	return s.update(func(st *state) { st.Pin, st.ExpectFingerprint = &p, "" })
 }
 
@@ -242,9 +341,11 @@ func (s *Store) SavePin(p Pin) error {
 // bundle may be pinned next; "" allows any. High-water time and used approvals
 // are kept, so clearing a pin cannot revive a spent approval.
 func (s *Store) ClearPin(expectFingerprint string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.refresh()
+	end, err := s.begin()
+	if err != nil {
+		return err
+	}
+	defer end()
 	return s.update(func(st *state) { st.Pin, st.ExpectFingerprint = nil, expectFingerprint })
 }
 
@@ -257,15 +358,29 @@ func (s *Store) ExpectFingerprint() string {
 }
 
 // raise lifts high-water time to t and writes it out once it is a minute ahead
-// of the file. A failed write is retried by the next call, and ClaimApproval
-// reports its own write errors.
+// of the file, if the file lock is free. A skipped or failed write is retried by
+// the next call, and ClaimApproval reports its own write errors.
 func (s *Store) raise(t time.Time) {
 	if t.After(s.st.HighWater) {
 		s.st.HighWater = t.UTC()
 	}
-	if s.loadErr == nil && s.st.HighWater.Sub(s.flushedHighWater) >= highWaterFlushEvery {
-		_ = s.write(s.st)
+	if s.loadErr != nil || s.st.HighWater.Sub(s.flushedHighWater) < highWaterFlushEvery {
+		return
 	}
+	mine := s.st.HighWater
+	unlock, err := s.lockFile(0)
+	if err != nil {
+		return
+	}
+	defer unlock()
+	s.refresh()
+	if s.loadErr != nil {
+		return
+	}
+	if mine.After(s.st.HighWater) {
+		s.st.HighWater = mine
+	}
+	_ = s.write(s.st)
 }
 
 // Now returns the later of the local clock and the high-water time, and raises
@@ -287,31 +402,45 @@ func (s *Store) ObserveIssuedAt(t time.Time) {
 }
 
 // ClaimApproval records an approval as used before its command runs, and
-// returns ErrReplayed if it already was. It drops entries high-water time has
-// passed, and writes high-water time along with the claim.
+// returns ErrReplayed if it already was, or if it expires at or before
+// PruneFloor. It drops entries high-water time has passed, and writes
+// high-water time along with the claim.
 func (s *Store) ClaimApproval(approvalID string, expiresAt time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.refresh()
+	end, err := s.begin()
+	if err != nil {
+		return err
+	}
+	defer end()
 	if s.loadErr != nil {
 		return s.loadErr
 	}
-	if _, used := s.st.Approvals[approvalID]; used {
+	if _, used := s.st.Approvals[approvalID]; used || !expiresAt.After(s.st.PruneFloor) {
 		return ErrReplayed
 	}
 	return s.update(func(st *state) {
-		maps.DeleteFunc(st.Approvals, func(_ string, exp time.Time) bool { return !exp.After(st.HighWater) })
+		maps.DeleteFunc(st.Approvals, func(_ string, exp time.Time) bool {
+			if exp.After(st.HighWater) {
+				return false
+			}
+			if exp.After(st.PruneFloor) {
+				st.PruneFloor = exp
+			}
+			return true
+		})
 		st.Approvals[approvalID] = expiresAt.UTC()
 	})
 }
 
 // ResetHighWater sets high-water time to clock even if that is earlier. It is
 // the one way back, for a local administrator recovering from a clock that ran
-// far ahead (`trust reset`).
+// far ahead (`trust reset`). It leaves PruneFloor alone, so approvals already
+// dropped stay refused.
 func (s *Store) ResetHighWater(clock time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.refresh()
+	end, err := s.begin()
+	if err != nil {
+		return err
+	}
+	defer end()
 	if s.loadErr != nil {
 		return s.loadErr
 	}
