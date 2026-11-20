@@ -302,17 +302,25 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 // Load returns the pin: nil, nil when there is none, ErrPinUnreadable when the
 // file exists but cannot be parsed or its bundle no longer matches its fingerprint.
 func (s *Store) Load() (*Pin, error) {
+	pin, _, err := s.LoadTrust()
+	return pin, err
+}
+
+// LoadTrust is Load plus the fingerprint `trust reset` is waiting for ("" when
+// none), read under one lock: read separately, a pin landing between the two
+// reads would look like "no pin and nothing awaited", which the gate allows.
+func (s *Store) LoadTrust() (pin *Pin, awaiting string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refresh()
 	if s.loadErr != nil {
-		return nil, s.loadErr
+		return nil, "", s.loadErr
 	}
 	if s.st.Pin == nil {
-		return nil, nil
+		return nil, s.st.ExpectFingerprint, nil
 	}
 	p := *s.st.Pin
-	return &p, nil
+	return &p, "", nil
 }
 
 // SavePin replaces the pin and consumes the fingerprint ClearPin asked for. It

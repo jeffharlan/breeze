@@ -3,6 +3,7 @@ package opsign
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -18,7 +19,8 @@ const maxIssuedAtSkew = 5 * time.Minute
 // Decision is the gate's answer for one command. Code is set whenever the
 // command did not pass the checks, including in audit mode where Allow stays
 // true so the caller can log it. Mode is the pinned bundle's mode; it is empty
-// when there is no pin, or when the pin could not be read.
+// when there is no pin, when the pin could not be read, and while a trust reset
+// waits for its bundle.
 type Decision struct {
 	Allow  bool
 	Mode   Mode
@@ -47,11 +49,17 @@ func DefaultGate() *Gate {
 
 // decide runs check against the pinned bundle, and turns its refusal code (""
 // for a pass) into the Decision for the bundle's mode. Nothing pinned allows
-// everything; a pin that cannot be trusted refuses in every mode.
+// everything; a pin that cannot be trusted refuses in every mode, and so does a
+// trust reset still waiting for its bundle. Otherwise the server could keep the
+// device unprotected after a reset simply by never sending that bundle.
 func (g *Gate) decide(check func(*Pin, Bundle) (wire.CommandErrorCode, string)) Decision {
-	pin, err := g.Store.Load()
+	pin, awaiting, err := g.Store.LoadTrust()
 	if err != nil {
 		return Decision{Code: wire.ErrCodeOpsignPinUnreadable, Reason: err.Error()}
+	}
+	if pin == nil && awaiting != "" {
+		return Decision{Code: wire.ErrCodeOpsignPinUnreadable, Reason: fmt.Sprintf(
+			"trust reset is waiting for the operator trust bundle with fingerprint %s; nothing that needs operator approval runs until it is pinned", awaiting)}
 	}
 	if pin == nil {
 		return Decision{Allow: true}

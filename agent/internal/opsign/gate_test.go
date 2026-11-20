@@ -161,6 +161,51 @@ func TestGateUnreadablePinRefusesInAudit(t *testing.T) {
 	}
 }
 
+// After `trust reset` the pin is gone until the named bundle arrives. A server
+// that never sends it must not get an ungated device out of the reset.
+func TestGateRefusesWhileTrustResetAwaitsItsBundle(t *testing.T) {
+	for _, mode := range []Mode{ModeAudit, ModeEnforce} {
+		t.Run(string(mode), func(t *testing.T) {
+			f := newGateFixtureWithFloor(t, mode, "v0.70.0")
+			pin := mustLoad(t, f.store)
+			if err := f.store.ClearPin(pin.Fingerprint); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.store.ResetHighWater(gateClock); err != nil {
+				t.Fatal(err)
+			}
+
+			for name, d := range map[string]Decision{
+				"unsigned script":           f.check(scriptPayload()),
+				"signed script":             f.check(f.signedScript()),
+				"vendor-signed update":      f.gate.CheckUpdate(UpdateCheck{Version: "v1.0.0", VendorSigned: true, Clock: gateClock}),
+				"unapproved deployment one": f.gate.CheckUpdate(UpdateCheck{Version: "v0.0.1", ArtifactSHA256: hashA, Clock: gateClock}),
+				"floor check":               f.gate.CheckFloor("v1.0.0"),
+			} {
+				wantRefused(t, d, wire.ErrCodeOpsignPinUnreadable)
+				if !strings.Contains(d.Reason, pin.Fingerprint) {
+					t.Errorf("%s: reason %q does not name the awaited fingerprint", name, d.Reason)
+				}
+			}
+			for _, typ := range []string{"cancel_reboot", "list_processes"} {
+				if TierOf(typ) == TierA {
+					t.Fatalf("%s is Tier A", typ)
+				}
+				wantAllowed(t, f.gate.Check(typ, map[string]any{}, gateClock))
+			}
+
+			// The heartbeat offering the awaited bundle lifts it.
+			if applied, err := ApplyBundle(f.store, pin.Bundle, f.identity, t0); err != nil || !applied {
+				t.Fatalf("re-pin: applied=%v err=%v", applied, err)
+			}
+			if d := f.check(scriptPayload()); d.Code != wire.ErrCodeOpsignNoApproval {
+				t.Fatalf("after the pin landed: %+v, want the normal no-approval result", d)
+			}
+			wantAllowed(t, f.gate.CheckFloor("v1.0.0"))
+		})
+	}
+}
+
 func TestGateValidScriptApproval(t *testing.T) {
 	for name, key := range map[string]func(*operators) testKey{
 		"approver": func(o *operators) testKey { return o.approver },

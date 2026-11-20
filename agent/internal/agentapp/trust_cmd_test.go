@@ -301,8 +301,29 @@ func TestTrustResetWithoutFileWaitsForHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "next matching bundle") || !strings.Contains(out, "heartbeat") {
+	if !strings.Contains(out, "next matching bundle") || !strings.Contains(out, "heartbeat") ||
+		!strings.Contains(out, "refuses every command that needs operator approval, and every update") {
 		t.Fatalf("output = %q", out)
+	}
+}
+
+// Until the awaited bundle lands the gate refuses Tier A, so show must not say
+// "mode: off".
+func TestTrustShowPendingAfterReset(t *testing.T) {
+	asAdministrator(t, true)
+	store, _, filePath := trustTestPaths(t)
+	fp := strings.Repeat("ab", 16)
+	if _, err := runTrust(t, store, enrolledConfig(), filePath, "reset", "--expect", fp); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runTrust(t, store, enrolledConfig(), filePath, "show")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "mode: pending\nawaiting fingerprint: " + groupFingerprint(fp) + "\n" +
+		"every command that needs operator approval, and every update, is refused until the bundle with this fingerprint is pinned\n"
+	if out != want {
+		t.Fatalf("output = %q, want %q", out, want)
 	}
 }
 
@@ -352,6 +373,7 @@ func TestTrustResetHelpNamesTheSideEffects(t *testing.T) {
 		"zeroes the stored clock, the used-approval list and the prune floor",
 		"on or before the old prune floor are refused for up to 24 hours",
 		"never decreases",
+		"Until then the agent refuses every command that needs operator approval, and every update, in every mode",
 	} {
 		if !strings.Contains(help, want) {
 			t.Errorf("reset help does not say %q", want)

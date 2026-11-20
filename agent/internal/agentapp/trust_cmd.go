@@ -69,7 +69,9 @@ func newTrustCommand(store func() *opsign.Store, local func() (*config.Config, s
 		Short: "Print the pinned operator trust bundle",
 		Long: `Print the operator trust bundle this agent has pinned: its mode, epoch, fingerprint,
 who it was pinned for, the stored clock and the keys it trusts. Compare the fingerprint
-with the one the operator's phone shows. Prints "mode: off" when nothing is pinned.
+with the one the operator's phone shows. Prints "mode: off" when nothing is pinned, and
+"mode: pending" while a trust reset waits for its bundle; the agent then refuses every
+command that needs operator approval, and every update, until that bundle is pinned.
 
 Exits 2 when the stored pin cannot be read. The agent then refuses every command that
 needs operator approval, in every mode, until "trust reset" repairs it.`,
@@ -78,7 +80,7 @@ needs operator approval, in every mode, until "trust reset" repairs it.`,
 			cmd.SilenceUsage = true // the arguments were fine; a usage dump would bury the error
 			out := cmd.OutOrStdout()
 			s := store()
-			pin, err := s.Load()
+			pin, awaiting, err := s.LoadTrust()
 			var bundle opsign.Bundle
 			if err == nil && pin != nil {
 				bundle, err = parsePinnedBundle(pin)
@@ -90,6 +92,12 @@ needs operator approval, in every mode, until "trust reset" repairs it.`,
 					msg += " (run as an administrator; a normal user may simply be unable to open the file)"
 				}
 				return &ExitCodeError{Code: exitCodeTrustUnreadable, Msg: msg}
+			}
+			if pin == nil && awaiting != "" {
+				fmt.Fprintf(out, "mode: pending\nawaiting fingerprint: %s\n"+
+					"every command that needs operator approval, and every update, is refused until the bundle with this fingerprint is pinned\n",
+					groupFingerprint(awaiting))
+				return nil
 			}
 			if pin == nil {
 				fmt.Fprintln(out, "mode: off")
@@ -116,7 +124,9 @@ needs operator approval, in every mode, until "trust reset" repairs it.`,
 give with --expect: 32 hex characters, with spaces or dashes between groups if you like.
 Run it as an administrator. If operator-trust.json in the agent's config folder holds that
 bundle it is pinned at once; otherwise the next matching bundle the server sends with a
-heartbeat is pinned.
+heartbeat is pinned. Until then the agent refuses every command that needs operator
+approval, and every update, in every mode, so a server that never sends the bundle
+cannot leave the device unprotected.
 
 The stored clock is set to this machine's current time, so a clock that once ran far ahead
 stops making every approval look expired. Approvals already used stay on the used list, so
@@ -162,7 +172,8 @@ a reset cannot make a spent approval usable again. Two things to know:
 			if applyErr != nil {
 				fmt.Fprintf(out, "operator-trust.json was not used: %v\n", applyErr)
 			}
-			fmt.Fprintln(out, "nothing is pinned yet; the next matching bundle the server sends with a heartbeat will be pinned")
+			fmt.Fprintln(out, "nothing is pinned yet; the next matching bundle the server sends with a heartbeat will be pinned. "+
+				"Until it is, this agent refuses every command that needs operator approval, and every update")
 			return nil
 		},
 	}
