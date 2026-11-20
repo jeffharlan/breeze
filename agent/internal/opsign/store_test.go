@@ -376,6 +376,22 @@ func TestResetHighWater(t *testing.T) {
 	}
 }
 
+func TestHighWaterReadsWithoutWriting(t *testing.T) {
+	path := statePath(t)
+	if got := OpenStore(path).HighWater(); !got.IsZero() {
+		t.Fatalf("HighWater with no file = %v, want zero", got)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("HighWater created the state file (stat err = %v)", err)
+	}
+	if err := OpenStore(path).ResetHighWater(t0); err != nil {
+		t.Fatal(err)
+	}
+	if got := restart(path).HighWater(); !got.Equal(t0) {
+		t.Fatalf("HighWater = %v, want %v", got, t0)
+	}
+}
+
 func TestUnreadableFileIsNeverOverwrittenByRoutineWrites(t *testing.T) {
 	path := statePath(t)
 	corrupt := []byte("not json")

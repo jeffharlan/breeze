@@ -341,6 +341,7 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(newContainmentCommand(config.GetDataDir))
+	rootCmd.AddCommand(newTrustCommand(func() *opsign.Store { return opsign.OpenStore(opsign.DefaultStorePath()) }, loadTrustHost))
 	rootCmd.AddCommand(supportCmd)
 	rootCmd.AddCommand(uninstallNotifyCmd)
 	rootCmd.AddCommand(userHelperCmd)

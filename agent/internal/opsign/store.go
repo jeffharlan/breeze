@@ -357,6 +357,15 @@ func (s *Store) ExpectFingerprint() string {
 	return s.st.ExpectFingerprint
 }
 
+// HighWater is the trusted-time floor on disk, for `trust show`. Unlike Now it
+// never writes.
+func (s *Store) HighWater() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refresh()
+	return s.st.HighWater
+}
+
 // raise lifts high-water time to t and writes it out once it is a minute ahead
 // of the file, if the file lock is free. A skipped or failed write is retried by
 // the next call, and ClaimApproval reports its own write errors.
