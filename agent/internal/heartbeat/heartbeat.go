@@ -2602,6 +2602,7 @@ func (h *Heartbeat) Start() {
 	for {
 		select {
 		case <-ticker.C:
+			h.observeOwnClock()
 			// #8318 — drive a staged reattach before the auth-dead skip: an
 			// agent whose confirm committed with its answer lost is one whose
 			// source credentials are now refused. Once the reattached identity

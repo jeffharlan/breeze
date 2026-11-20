@@ -435,6 +435,24 @@ func TestGateExpiryUsesHighWater(t *testing.T) {
 	wantRefused(t, f.gate.Check("script", p, t0), wire.ErrCodeOpsignExpired)
 }
 
+// Ten days of heartbeat ticks with no approval in between, then the clock wound
+// back to just after an old approval was issued: it must stay expired, and the
+// refusal must say the stored time is ahead so someone knows to reset it.
+func TestGateClockWoundBackCannotReviveAnApproval(t *testing.T) {
+	f := newGateFixture(t, ModeEnforce)
+	signed := f.signedScript() // valid from 10:00 to 11:00
+	for day := 1; day <= 10; day++ {
+		f.store.ObserveClock(t0.Add(time.Duration(day) * 24 * time.Hour))
+	}
+	f.gate.Store = restart(f.path)
+
+	d := f.gate.Check("script", signed, gateClock)
+	wantRefused(t, d, wire.ErrCodeOpsignExpired)
+	if !strings.Contains(d.Reason, "stored time is") || !strings.Contains(d.Reason, "trust reset") {
+		t.Fatalf("reason %q does not say the stored time is ahead or how to clear it", d.Reason)
+	}
+}
+
 func TestGateReplayAfterRestart(t *testing.T) {
 	f := newGateFixture(t, ModeEnforce)
 	p := f.signedScript()

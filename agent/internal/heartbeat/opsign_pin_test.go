@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/breeze-rmm/agent/internal/config"
 	"github.com/breeze-rmm/agent/internal/opsign"
@@ -171,5 +172,22 @@ func TestOpsignResponseWithoutBundleDoesNothing(t *testing.T) {
 	h.processHeartbeatResponse(&HeartbeatResponse{})
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("state file stat err=%v, want it absent", err)
+	}
+}
+
+// The local tick records the device's own clock as trusted time once a bundle
+// is pinned, and leaves an unpinned device without a state file.
+func TestOpsignTickRaisesStoredTimeOnlyWhenPinned(t *testing.T) {
+	h, path := opsignTestHeartbeat(t, opsignTestDevice)
+	h.observeOwnClock()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("an unpinned device got a state file from the tick (stat err=%v)", err)
+	}
+
+	h.processHeartbeatResponse(opsignTestResponse(t, opsignTestBundle(t, 1, 1, newOpsignTestAdmin(t, "one"))))
+	before := time.Now()
+	h.observeOwnClock()
+	if got := h.opsignStore.HighWater(); got.Before(before.Add(-time.Second)) {
+		t.Fatalf("stored time after the tick = %v, want at least %v", got, before)
 	}
 }

@@ -106,9 +106,14 @@ needs operator approval, in every mode, until "trust reset" repairs it.`,
 				}
 				return nil
 			}
+			highWater := s.HighWater()
 			fmt.Fprintf(out, "mode: %s\nepoch: %d\nfingerprint: %s\npartner: %s\ndevice: %s\norg: %s\nhostname: %s\nhighWater: %s\n",
 				bundle.Mode, bundle.Epoch, groupFingerprint(pin.Fingerprint), pin.PartnerID, pin.DeviceID, pin.OrgID, pin.Hostname,
-				s.HighWater().UTC().Format(time.RFC3339))
+				highWater.UTC().Format(time.RFC3339))
+			if ahead, stuck := opsign.StoredTimeAhead(highWater, time.Now()); stuck {
+				fmt.Fprintf(out, "the stored time is %s ahead of this machine's clock, so every approval looks expired; "+
+					"if the clock once ran ahead, run breeze-agent trust reset\n", ahead)
+			}
 			for _, k := range bundle.Keys {
 				fmt.Fprintf(out, "key %s %s %s\n", k.KeyID, k.Role, k.Label)
 			}

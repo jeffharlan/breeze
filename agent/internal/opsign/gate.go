@@ -79,9 +79,11 @@ func (g *Gate) decide(check func(*Pin, Bundle) (wire.CommandErrorCode, string)) 
 	return Decision{Allow: bundle.Mode == ModeAudit, Mode: bundle.Mode, Code: code, Reason: reason}
 }
 
-// Check applies spec section 6. The state file is written (high-water time, the
-// used-approval list) only once an approval has passed its signature and issue
-// time checks, so a command without one never touches it.
+// Check applies spec section 6. The gate writes the state file (high-water
+// time, the used-approval list) only for an approval that passed its signature,
+// target, payload hash and issue time checks, so a command without a valid one
+// never touches it. The heartbeat also raises high-water time from the device's
+// own clock on every tick (Store.ObserveClock).
 func (g *Gate) Check(commandType string, payload map[string]any, clock time.Time) Decision {
 	if TierOf(commandType) != TierA {
 		return Decision{Allow: true}
@@ -145,6 +147,15 @@ func belowFloor(bundle Bundle, version string) (wire.CommandErrorCode, string) {
 		return wire.ErrCodeOpsignBelowFloor, "this version is older than the minimum agent version the trust bundle sets"
 	}
 	return "", ""
+}
+
+// StoredTimeAhead is how far high-water time is ahead of clock, and whether
+// that is more than an approval's allowed issue-time skew: the mark of a clock
+// that once ran forward and stuck. Every approval then looks expired, and only
+// `trust reset` on the device clears it.
+func StoredTimeAhead(highWater, clock time.Time) (time.Duration, bool) {
+	ahead := highWater.Sub(clock).Truncate(time.Second)
+	return ahead, ahead > maxIssuedAtSkew
 }
 
 const identityChangedReason = "this device is not the one its operator trust bundle was pinned under"
@@ -224,8 +235,12 @@ func (g *Gate) verifyApproval(pin *Pin, bundle Bundle, id Identity, c Carrier, c
 		return wire.ErrCodeOpsignMalformed, "the approval is dated ahead of this device's clock"
 	}
 	g.Store.ObserveIssuedAt(approval.IssuedAt)
-	if !approval.ExpiresAt.After(g.Store.Now(clock)) {
-		return wire.ErrCodeOpsignExpired, "the approval has expired"
+	if now := g.Store.Now(clock); !approval.ExpiresAt.After(now) {
+		reason := "the approval has expired"
+		if ahead, stuck := StoredTimeAhead(now, clock); stuck {
+			reason += fmt.Sprintf("; this device's stored time is %s ahead of its clock, so if the clock once ran ahead, run breeze-agent trust reset on it", ahead)
+		}
+		return wire.ErrCodeOpsignExpired, reason
 	}
 
 	if singleUse {

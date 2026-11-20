@@ -147,6 +147,32 @@ func TestTrustShowPinned(t *testing.T) {
 	}
 }
 
+// A clock that once ran ahead leaves the stored time ahead, and every approval
+// then looks expired; show must say so, or it looks like nothing is wrong.
+func TestTrustShowSaysWhenStoredTimeIsAhead(t *testing.T) {
+	asAdministrator(t, true)
+	store, _, filePath := trustTestPaths(t)
+	pinTrustBundle(t, store, filePath, signedTrustBundle(t))
+
+	out, err := runTrust(t, store, enrolledConfig(), filePath, "show")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "ahead") {
+		t.Fatalf("a stored time that is not ahead was reported: %q", out)
+	}
+	if err := store.ResetHighWater(time.Now().Add(30 * 24 * time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runTrust(t, store, enrolledConfig(), filePath, "show")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "ahead of this machine's clock") || !strings.Contains(out, "trust reset") {
+		t.Fatalf("output = %q, want the stored time reported ahead with the way out", out)
+	}
+}
+
 func TestTrustShowUnreadableExit2(t *testing.T) {
 	store, statePath, filePath := trustTestPaths(t)
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {

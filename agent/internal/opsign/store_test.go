@@ -175,13 +175,79 @@ func TestHighWaterFlushIsRateLimited(t *testing.T) {
 	path := statePath(t)
 	s := OpenStore(path)
 	s.Now(t0)
-	s.Now(t0.Add(30 * time.Second))
+	almost := t0.Add(highWaterFlushEvery - time.Second)
+	s.Now(almost)
 	if got := fileState(t, path).HighWater; !got.Equal(t0) {
-		t.Fatalf("30s later the file has %v; it should still be 10:00", got)
+		t.Fatalf("just under the flush interval the file has %v; it should still be 10:00", got)
 	}
-	s.Now(t0.Add(time.Minute))
-	if got := fileState(t, path).HighWater; !got.Equal(t0.Add(time.Minute)) {
-		t.Fatalf("a minute later the file has %v", got)
+	if got := s.Now(t0); !got.Equal(almost) {
+		t.Fatalf("in memory Now = %v, want %v even before it is written", got, almost)
+	}
+	s.Now(t0.Add(highWaterFlushEvery))
+	if got := fileState(t, path).HighWater; !got.Equal(t0.Add(highWaterFlushEvery)) {
+		t.Fatalf("a flush interval later the file has %v", got)
+	}
+}
+
+// The heartbeat's tick: the device's own clock counts as trusted time, but only
+// on a pinned device, which is the only kind with a state file to write.
+func TestObserveClockRaisesHighWaterOnlyWhenPinned(t *testing.T) {
+	path := statePath(t)
+	s := OpenStore(path)
+	s.ObserveClock(t0)
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ObserveClock created a state file with nothing pinned (stat err = %v)", err)
+	}
+
+	if err := s.SavePin(samplePin(t), ""); err != nil {
+		t.Fatal(err)
+	}
+	later := t0.Add(240 * time.Hour)
+	s.ObserveClock(later)
+	if got := restart(path).Now(t0); !got.Equal(later) {
+		t.Fatalf("after a restart Now(10:00) = %v, want the observed %v", got, later)
+	}
+}
+
+func stubRead(t *testing.T, fn func(path string) ([]byte, error)) {
+	t.Helper()
+	oldRead, oldSleep := readFile, retrySleep
+	readFile, retrySleep = fn, func(time.Duration) {}
+	t.Cleanup(func() { readFile, retrySleep = oldRead, oldSleep })
+}
+
+// On Windows a read that meets another process's rename can fail for a moment.
+// Reported at once, it would refuse Tier A even in audit mode.
+func TestReadRetriesTransientFailure(t *testing.T) {
+	path := statePath(t)
+	if err := OpenStore(path).SavePin(samplePin(t), ""); err != nil {
+		t.Fatal(err)
+	}
+	failures := 2
+	stubRead(t, func(p string) ([]byte, error) {
+		if failures > 0 {
+			failures--
+			return nil, errors.New("access denied")
+		}
+		return os.ReadFile(p)
+	})
+	if pin, err := restart(path).Load(); err != nil || pin == nil {
+		t.Fatalf("a read that succeeds on the 3rd try: pin=%v err=%v", pin, err)
+	}
+}
+
+func TestReadGivesUpAsUnreadable(t *testing.T) {
+	path := statePath(t)
+	if err := OpenStore(path).SavePin(samplePin(t), ""); err != nil {
+		t.Fatal(err)
+	}
+	attempts := 0
+	stubRead(t, func(string) ([]byte, error) { attempts++; return nil, errors.New("access denied") })
+	if _, err := restart(path).Load(); !errors.Is(err, ErrPinUnreadable) {
+		t.Fatalf("Load = %v, want ErrPinUnreadable", err)
+	}
+	if attempts != readAttempts {
+		t.Fatalf("read attempts = %d, want %d", attempts, readAttempts)
 	}
 }
 
@@ -619,9 +685,9 @@ func TestHighWaterFlushSkipsWhenLockIsBusy(t *testing.T) {
 
 func stubRename(t *testing.T, fn func(from, to string) error) {
 	t.Helper()
-	oldRename, oldSleep := renameFile, renameSleep
-	renameFile, renameSleep = fn, func(time.Duration) {}
-	t.Cleanup(func() { renameFile, renameSleep = oldRename, oldSleep })
+	oldRename, oldSleep := renameFile, retrySleep
+	renameFile, retrySleep = fn, func(time.Duration) {}
+	t.Cleanup(func() { renameFile, retrySleep = oldRename, oldSleep })
 }
 
 func TestWriteRetriesTransientRenameFailure(t *testing.T) {

@@ -38,7 +38,9 @@ var DefaultStorePath = func() string {
 // highWaterFlushEvery is how far trusted time must advance past what is on
 // disk before a clock reading alone is written out. Advancing by the clock
 // (not by wall time) keeps a stuck or rolled-back clock from causing writes.
-const highWaterFlushEvery = time.Minute
+// The heartbeat raises it every tick on every pinned device, so it is minutes,
+// not seconds; the cost is that a restart can lose up to this much of it.
+const highWaterFlushEvery = 10 * time.Minute
 
 const (
 	lockWait  = 5 * time.Second
@@ -130,7 +132,7 @@ func (p *Pin) check() error {
 // wrote. `breeze-agent trust reset` runs in another process, and a long-running
 // agent must adopt its change instead of writing its older copy back over it.
 func (s *Store) refresh() {
-	data, err := os.ReadFile(s.path)
+	data, err := readWithRetry(s.path)
 	absent := errors.Is(err, fs.ErrNotExist)
 	if err != nil && !absent {
 		s.fail(err)
@@ -233,6 +235,9 @@ func (s *Store) write(st state) error {
 	if err != nil {
 		return err
 	}
+	// The modes here and in lockFile do nothing on Windows: there the folder is
+	// closed to ordinary users by the ACL it inherits from the agent's data
+	// folder (config/permissions_windows.go), not by these bits.
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
 	}
@@ -243,16 +248,33 @@ func (s *Store) write(st state) error {
 	return nil
 }
 
-// renameFile and renameSleep let tests inject rename failures without waiting.
+// readFile, renameFile and retrySleep let tests inject read and rename
+// failures without waiting.
 var (
-	renameFile  = os.Rename
-	renameSleep = time.Sleep
+	readFile   = os.ReadFile
+	renameFile = os.Rename
+	retrySleep = time.Sleep
 )
 
 const (
+	readAttempts   = 3
+	readBackoff    = 5 * time.Millisecond
 	renameAttempts = 6
 	renameBackoff  = 25 * time.Millisecond
 )
+
+// readWithRetry retries a failed read briefly. On Windows, opening the file at
+// the instant another process (the watchdog, the trust CLI) renames a new copy
+// over it can fail with access denied, and an unreadable pin refuses Tier A
+// even in audit mode, which promises never to block.
+func readWithRetry(path string) ([]byte, error) {
+	data, err := readFile(path)
+	for attempt := 1; attempt < readAttempts && err != nil && !errors.Is(err, fs.ErrNotExist); attempt++ {
+		retrySleep(readBackoff)
+		data, err = readFile(path)
+	}
+	return data, err
+}
 
 // renameWithRetry follows internal/config's helper: on Windows a rename onto a
 // file another process holds open (antivirus, a reader without share-delete)
@@ -262,7 +284,7 @@ func renameWithRetry(from, to string) error {
 	var err error
 	for attempt := 0; attempt < renameAttempts; attempt++ {
 		if attempt > 0 {
-			renameSleep(renameBackoff << (attempt - 1))
+			retrySleep(renameBackoff << (attempt - 1))
 		}
 		if err = renameFile(from, to); err == nil {
 			return nil
@@ -386,8 +408,8 @@ func (s *Store) HighWater() time.Time {
 	return s.st.HighWater
 }
 
-// raise lifts high-water time to t and writes it out once it is a minute ahead
-// of the file, if the file lock is free. A skipped or failed write is retried by
+// raise lifts high-water time to t and writes it out once it is
+// highWaterFlushEvery ahead of the file, if the file lock is free. A skipped or failed write is retried by
 // the next call, and ClaimApproval reports its own write errors.
 func (s *Store) raise(t time.Time) {
 	if t.After(s.st.HighWater) {
@@ -420,6 +442,20 @@ func (s *Store) Now(clock time.Time) time.Time {
 	s.refresh()
 	s.raise(clock)
 	return s.st.HighWater
+}
+
+// ObserveClock raises high-water time to the device's own clock, as Now does,
+// but only while a pin is stored: unpinned there is nothing to protect, and a
+// write would create the state file. The heartbeat calls it on every local
+// tick, so a clock wound back later cannot revive an approval that expired in
+// between, even if none was verified meanwhile.
+func (s *Store) ObserveClock(clock time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refresh()
+	if s.st.Pin != nil {
+		s.raise(clock)
+	}
 }
 
 // ObserveIssuedAt raises high-water time to a verified approval's issuedAt.
